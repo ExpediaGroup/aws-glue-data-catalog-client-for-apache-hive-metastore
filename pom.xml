@@ -4,7 +4,8 @@
 
   <groupId>com.amazonaws.glue</groupId>
   <artifactId>aws-glue-datacatalog-hive-client</artifactId>
-  <version>1.10.0-SNAPSHOT</version>
+  <!-- Fork that compiles without patching Hive needed and used for https://github.com/ExpediaGroup/waggle-dance -->
+  <version>1.10.0-WD-SNAPSHOT</version>
     <modules>
       <module>aws-glue-datacatalog-client-common</module>
       <module>aws-glue-datacatalog-spark-client</module>
@@ -20,7 +21,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <guava.version>14.0.1</guava.version>
     <hive2.version>2.3.3</hive2.version>
-    <spark-hive.version>1.2.1</spark-hive.version>
+    <spark-hive.version>1.2.1.spark2</spark-hive.version>
     <aws.sdk.version>1.11.267</aws.sdk.version>
     <junit.version>4.11</junit.version>
     <mockito.version>1.10.19</mockito.version>
@@ -42,8 +43,8 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>2.3.1</version>
           <configuration>
-            <source>1.7</source>
-            <target>1.7</target>
+            <source>1.8</source>
+            <target>1.8</target>
             <encoding>UTF-8</encoding>
           </configuration>
         </plugin>
