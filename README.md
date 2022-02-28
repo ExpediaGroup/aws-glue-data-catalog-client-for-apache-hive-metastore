@@ -1,3 +1,6 @@
+## Expedia fork
+This is a fork to facilitate some changes needed for a different project called https://github.com/ExpediaGroup/waggle-dance. There is no intention at this time to make any other changes except to facilitate Waggle Dance. Please make any contributions to the upstream project if needed.
+
 ## AWS Glue Data Catalog Client for Apache Hive Metastore
 The AWS Glue Data Catalog is a fully managed, Apache Hive Metastore compatible, metadata repository. Customers can use the Data Catalog as a central repository to store structural and operational metadata for their data.
 
@@ -111,4 +114,4 @@ NOTE: The caching logic is disabled by default. Also, there is no one-size-fits-
 
 ## License
 
-This library is licensed under the Apache 2.0 License. 
+This library is licensed under the Apache 2.0 License.
