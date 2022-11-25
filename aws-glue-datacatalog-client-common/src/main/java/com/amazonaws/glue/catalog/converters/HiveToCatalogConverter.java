@@ -39,7 +39,9 @@ public class HiveToCatalogConverter {
           Table hiveTable) {
     com.amazonaws.services.glue.model.Table catalogTable = new com.amazonaws.services.glue.model.Table();
     catalogTable.setRetention(hiveTable.getRetention());
-    catalogTable.setPartitionKeys(convertFieldSchemaList(hiveTable.getPartitionKeys()));
+    if (hiveTable.isSetPartitionKeys()) {
+      catalogTable.setPartitionKeys(convertFieldSchemaList(hiveTable.getPartitionKeys()));
+    }
     catalogTable.setTableType(hiveTable.getTableType());
     catalogTable.setName(hiveTable.getTableName());
     catalogTable.setOwner(hiveTable.getOwner());
