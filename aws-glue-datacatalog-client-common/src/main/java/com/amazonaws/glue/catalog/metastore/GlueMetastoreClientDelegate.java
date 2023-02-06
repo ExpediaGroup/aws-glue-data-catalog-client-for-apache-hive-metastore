@@ -86,6 +86,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static com.amazonaws.glue.catalog.converters.ConverterUtils.stringToCatalogTable;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.deepCopyMap;
@@ -363,16 +364,12 @@ public class GlueMetastoreClientDelegate {
     }
   }
 
-  public List<String> getTables(String dbname, String tablePattern) throws TException {
-    checkArgument(StringUtils.isNotEmpty(dbname), "dbName cannot be null or empty");
-
-    List<String> names = Lists.newArrayList();
+  private List<Table> getGlueTables(String dbName, String tblPattern) throws TException {
+    checkArgument(StringUtils.isNotEmpty(dbName), "dbName cannot be null or empty");
+    tblPattern = tblPattern.toLowerCase();
     try {
-      List<Table> tables = glueMetastore.getTables(dbname, tablePattern);
-      for (Table catalogTable : tables) {
-          names.add(catalogTable.getName());
-      }
-      return names;
+      List<Table> tables = glueMetastore.getTables(dbName, tblPattern);
+      return tables;
     } catch (AmazonServiceException e) {
       throw CatalogToHiveConverter.wrapInHiveException(e);
     } catch (Exception e) {
@@ -380,6 +377,13 @@ public class GlueMetastoreClientDelegate {
       logger.error(msg, e);
       throw new MetaException(msg + e);
     }
+  }
+
+  public List<String> getTables(String dbName, String tablePattern) throws TException {
+    return getGlueTables(dbName, tablePattern)
+            .stream()
+            .map(Table::getName)
+            .collect(Collectors.toList());
   }
 
   public List<TableMeta> getTableMeta(
@@ -521,7 +525,11 @@ public class GlueMetastoreClientDelegate {
   }
 
   public List<String> getTables(String dbname, String tablePattern, TableType tableType) throws TException {
-    throw new UnsupportedOperationException("getTables with TableType is not supported");
+    return getGlueTables(dbname, tablePattern)
+            .stream()
+            .filter(table -> tableType.toString().equals(table.getTableType()))
+            .map(Table::getName)
+            .collect(Collectors.toList());
   }
 
   public List<String> listTableNamesByFilter(String dbName, String filter, short maxTables) throws TException {
@@ -793,7 +801,7 @@ public class GlueMetastoreClientDelegate {
     checkArgument(StringUtils.isNotEmpty(dbName), "dbName cannot be null or empty");
     checkArgument(StringUtils.isNotEmpty(tblName), "tblName cannot be null or empty");
     checkNotNull(values, "values cannot be null");
-   
+
 
     Partition partition;
     try {
@@ -937,7 +945,7 @@ public class GlueMetastoreClientDelegate {
       }
 
       PartitionInput partitionInput = GlueInputConverter.convertToPartitionInput(part);
-     
+
       try {
         glueMetastore.updatePartition(dbName, tblName, part.getValues(), partitionInput);
       } catch (AmazonServiceException e) {
@@ -1452,11 +1460,11 @@ public class GlueMetastoreClientDelegate {
   public void setUGI(String username) throws TException {
     throw new UnsupportedOperationException("setUGI is unsupported");
   }
-  
+
   /**
    * Gets the user defined function in a database stored in metastore and
    * converts back to Hive function.
-   * 
+   *
    * @param dbName
    * @param functionName
    * @return
@@ -1481,7 +1489,7 @@ public class GlueMetastoreClientDelegate {
   /**
    * Gets user defined functions that match a pattern in database stored in
    * metastore and converts back to Hive function.
-   * 
+   *
    * @param dbName
    * @param pattern
    * @return
@@ -1509,7 +1517,7 @@ public class GlueMetastoreClientDelegate {
 
   /**
    * Creates a new user defined function in the metastore.
-   * 
+   *
    * @param function
    * @throws InvalidObjectException
    * @throws MetaException
@@ -1532,7 +1540,7 @@ public class GlueMetastoreClientDelegate {
 
   /**
    * Drops a user defined function in the database stored in metastore.
-   * 
+   *
    * @param dbName
    * @param functionName
    * @throws MetaException
@@ -1554,10 +1562,10 @@ public class GlueMetastoreClientDelegate {
       throw new MetaException(msg + e);
     }
   }
-  
+
   /**
    * Updates a user defined function in a database stored in the metastore.
-   * 
+   *
    * @param dbName
    * @param functionName
    * @param newFunction
@@ -1580,10 +1588,10 @@ public class GlueMetastoreClientDelegate {
       throw new MetaException(msg + e);
     }
   }
-  
+
   /**
    * Fetches the fields for a table in a database.
-   * 
+   *
    * @param db
    * @param tableName
    * @return
@@ -1605,10 +1613,10 @@ public class GlueMetastoreClientDelegate {
       throw new MetaException(msg + e);
     }
   }
-  
+
   /**
    * Fetches the schema for a table in a database.
-   * 
+   *
    * @param db
    * @param tableName
    * @return
@@ -1637,7 +1645,7 @@ public class GlueMetastoreClientDelegate {
 
   /**
    * Updates the partition values for a table in database stored in metastore.
-   * 
+   *
    * @param databaseName
    * @param tableName
    * @param partitionValues
