@@ -150,9 +150,10 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
 
     snapshotActiveConf();
     catalogId = MetastoreClientUtils.getCatalogId(conf);
-    if (!doesDefaultDBExist()) {
-      createDefaultDatabase();
-    }
+//skip this this is hive doing hive things when you have a local metastore, Seems not needed for external metastores. See also line 230
+//    if (!doesDefaultDBExist()) {
+//      createDefaultDatabase();
+//    }
   }
 
   /**
