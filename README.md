@@ -114,8 +114,4 @@ NOTE: The caching logic is disabled by default.
 
 ## License
 
-<<<<<<< HEAD
 This library is licensed under the Apache 2.0 License.
-=======
-This library is licensed under the Apache 2.0 License. 
->>>>>>> branch-3.4.0
