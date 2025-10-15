@@ -1,6 +1,6 @@
 package com.amazonaws.glue.catalog.metastore;
 
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.conf.Configuration;
 
 import java.util.concurrent.ExecutorService;
 
@@ -8,5 +8,5 @@ import java.util.concurrent.ExecutorService;
  * Interface for creating an ExecutorService
  */
 public interface ExecutorServiceFactory {
-    public ExecutorService getExecutorService(HiveConf conf);
+    public ExecutorService getExecutorService(Configuration conf);
 }

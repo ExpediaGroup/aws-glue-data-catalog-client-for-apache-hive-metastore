@@ -2,16 +2,17 @@ package com.amazonaws.glue.catalog.util;
 
 import com.amazonaws.glue.catalog.metastore.AWSGlueMetastore;
 import com.amazonaws.glue.catalog.converters.CatalogToHiveConverter;
+import com.amazonaws.glue.catalog.converters.CatalogToHiveConverterFactory;
 import com.amazonaws.glue.catalog.converters.GlueInputConverter;
 import com.amazonaws.services.glue.model.EntityNotFoundException;
 import com.amazonaws.services.glue.model.Partition;
 import com.amazonaws.services.glue.model.PartitionError;
 import com.google.common.collect.Lists;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hive.metastore.api.AlreadyExistsException;
 import org.apache.log4j.Logger;
 import org.apache.thrift.TException;
+import org.apache.commons.lang3.StringUtils;
 
 import java.util.Collection;
 import java.util.List;
@@ -32,6 +33,7 @@ public final class BatchCreatePartitionsHelper {
   private List<Partition> partitionsFailed;
   private TException firstTException;
   private String catalogId;
+  private CatalogToHiveConverter catalogToHiveConverter;
 
   public BatchCreatePartitionsHelper(AWSGlueMetastore glueClient, String databaseName, String tableName, String catalogId,
                                      List<Partition> partitions, boolean ifNotExists) {
@@ -41,6 +43,7 @@ public final class BatchCreatePartitionsHelper {
     this.catalogId = catalogId;
     this.partitions = partitions;
     this.ifNotExists = ifNotExists;
+    catalogToHiveConverter = CatalogToHiveConverterFactory.getCatalogToHiveConverter();
   }
 
   public BatchCreatePartitionsHelper createPartitions() {
@@ -54,7 +57,7 @@ public final class BatchCreatePartitionsHelper {
       processResult(result);
     } catch (Exception e) {
       logger.error("Exception thrown while creating partitions in DataCatalog: ", e);
-      firstTException = CatalogToHiveConverter.wrapInHiveException(e);
+      firstTException = catalogToHiveConverter.wrapInHiveException(e);
       if (isInvalidUserInputException(e)) {
         setAllFailed();
       } else {
@@ -75,12 +78,12 @@ public final class BatchCreatePartitionsHelper {
     }
 
     logger.error(String.format("BatchCreatePartitions failed to create %d out of %d partitions. \n",
-        partitionErrors.size(), partitionMap.size()));
+            partitionErrors.size(), partitionMap.size()));
 
     for (PartitionError partitionError : partitionErrors) {
       Partition partitionFailed = partitionMap.remove(new PartitionKey(partitionError.getPartitionValues()));
 
-      TException exception = CatalogToHiveConverter.errorDetailToHiveException(partitionError.getErrorDetail());
+      TException exception = catalogToHiveConverter.errorDetailToHiveException(partitionError.getErrorDetail());
       if (ifNotExists && exception instanceof AlreadyExistsException) {
         // AlreadyExistsException is allowed, so we shouldn't add the partition to partitionsFailed list
         continue;
@@ -103,7 +106,6 @@ public final class BatchCreatePartitionsHelper {
   }
 
   private boolean partitionExists(Partition partition) {
-    
     try {
       Partition partitionReturned = glueClient.getPartition(databaseName, tableName, partition.getValues());
       return partitionReturned != null; //probably always true here
@@ -111,8 +113,7 @@ public final class BatchCreatePartitionsHelper {
       // here we assume namespace and table exist. It is assured by calling "isInvalidUserInputException" method above
       return false;
     } catch (Exception e) {
-      logger.error(String.format("Get partition request %s failed. ",
-              StringUtils.join(partition.getValues(), "/")), e);
+      logger.error(String.format("Get partition request %s failed. ", StringUtils.join(partition.getValues(), "/")), e);
       // partition status unknown, we assume that the partition was not created
       return false;
     }

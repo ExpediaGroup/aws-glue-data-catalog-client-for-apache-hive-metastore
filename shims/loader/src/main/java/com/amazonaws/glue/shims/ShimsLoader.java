@@ -1,5 +1,7 @@
 package com.amazonaws.glue.shims;
 
+import org.apache.hive.common.util.HiveVersionInfo;
+
 import com.google.common.annotations.VisibleForTesting;
 
 public final class ShimsLoader {
@@ -14,12 +16,20 @@ public final class ShimsLoader {
   }
 
   private static AwsGlueHiveShims loadHiveShims() {
-    // temp workaround to work with WD that loads Hive3.
+    String hiveVersion = HiveVersionInfo.getShortVersion();
+
     try {
-      return AwsGlueHive2Shims.class.newInstance();
+      if (AwsGlueSparkHiveShims.supportsVersion(hiveVersion)) {
+          return AwsGlueSparkHiveShims.class.newInstance();
+      } else if (AwsGlueHive3Shims.supportsVersion(hiveVersion)) {
+        return AwsGlueHive3Shims.class.newInstance();
+      }
     } catch (InstantiationException | IllegalAccessException e) {
-      throw new RuntimeException("unable to get instance of Hive 2.x shim class");
+      throw new RuntimeException("unable to get instance of Hive shim class for " + hiveVersion);
     }
+
+
+    throw new RuntimeException("Shim class for Hive version " + hiveVersion + " does not exist");
   }
 
   @VisibleForTesting
