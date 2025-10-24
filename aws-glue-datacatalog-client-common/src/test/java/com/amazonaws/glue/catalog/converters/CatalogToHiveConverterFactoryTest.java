@@ -18,7 +18,6 @@ import static org.powermock.api.mockito.PowerMockito.when;
 @RunWith(PowerMockRunner.class)
 public class CatalogToHiveConverterFactoryTest {
 
-  private static final String HIVE_1_2_VERSION = "1.2.1";
   private static final String HIVE_3_VERSION = "3.1.3";
 
   @Before
@@ -29,13 +28,6 @@ public class CatalogToHiveConverterFactoryTest {
   @After
   public void reset() {
     CatalogToHiveConverterFactory.clearConverter();
-  }
-
-  @Test
-  public void testGetBaseCatalogToHiveConverter() {
-    when(HiveVersionInfo.getShortVersion()).thenReturn(HIVE_1_2_VERSION);
-    CatalogToHiveConverter catalogToHiveConverter = CatalogToHiveConverterFactory.getCatalogToHiveConverter();
-    assertTrue(BaseCatalogToHiveConverter.class.isInstance(catalogToHiveConverter));
   }
 
   @Test
