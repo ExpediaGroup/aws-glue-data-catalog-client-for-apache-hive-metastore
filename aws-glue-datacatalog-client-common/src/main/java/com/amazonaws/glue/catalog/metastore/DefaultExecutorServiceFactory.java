@@ -1,7 +1,7 @@
 package com.amazonaws.glue.catalog.metastore;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.conf.Configuration;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,7 +16,7 @@ public class DefaultExecutorServiceFactory implements ExecutorServiceFactory {
     );
 
     @Override
-    public ExecutorService getExecutorService(HiveConf conf) {
+    public ExecutorService getExecutorService(Configuration conf) {
         return GLUE_METASTORE_DELEGATE_THREAD_POOL;
     }
 }

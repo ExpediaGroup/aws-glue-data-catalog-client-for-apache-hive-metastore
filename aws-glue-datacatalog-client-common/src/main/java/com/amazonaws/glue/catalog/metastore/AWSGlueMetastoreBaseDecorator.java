@@ -1,5 +1,7 @@
 package com.amazonaws.glue.catalog.metastore;
 
+import com.amazonaws.services.glue.model.ColumnStatistics;
+import com.amazonaws.services.glue.model.ColumnStatisticsError;
 import com.amazonaws.services.glue.model.Database;
 import com.amazonaws.services.glue.model.DatabaseInput;
 import com.amazonaws.services.glue.model.Partition;
@@ -10,9 +12,11 @@ import com.amazonaws.services.glue.model.Table;
 import com.amazonaws.services.glue.model.TableInput;
 import com.amazonaws.services.glue.model.UserDefinedFunction;
 import com.amazonaws.services.glue.model.UserDefinedFunctionInput;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.thrift.TException;
 
 import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -71,6 +75,11 @@ public class AWSGlueMetastoreBaseDecorator implements AWSGlueMetastore {
     }
 
     @Override
+    public void updateTable(String dbName, TableInput tableInput, EnvironmentContext environmentContext) {
+        awsGlueMetastore.updateTable(dbName, tableInput, environmentContext);
+    }
+
+    @Override
     public void deleteTable(String dbName, String tableName) {
         awsGlueMetastore.deleteTable(dbName, tableName);
     }
@@ -121,6 +130,11 @@ public class AWSGlueMetastoreBaseDecorator implements AWSGlueMetastore {
     }
 
     @Override
+    public List<UserDefinedFunction> getUserDefinedFunctions(String pattern) {
+        return awsGlueMetastore.getUserDefinedFunctions(pattern);
+    }
+
+    @Override
     public void deleteUserDefinedFunction(String dbName, String functionName) {
         awsGlueMetastore.deleteUserDefinedFunction(dbName, functionName);
     }
@@ -128,6 +142,36 @@ public class AWSGlueMetastoreBaseDecorator implements AWSGlueMetastore {
     @Override
     public void updateUserDefinedFunction(String dbName, String functionName, UserDefinedFunctionInput functionInput) {
         awsGlueMetastore.updateUserDefinedFunction(dbName, functionName, functionInput);
+    }
+
+    @Override
+    public void deletePartitionColumnStatistics(String dbName, String tableName, List<String> partitionValues, String colName) {
+        awsGlueMetastore.deletePartitionColumnStatistics(dbName, tableName, partitionValues, colName);
+    }
+
+    @Override
+    public void deleteTableColumnStatistics(String dbName, String tableName, String colName) {
+        awsGlueMetastore.deleteTableColumnStatistics(dbName, tableName, colName);
+    }
+
+    @Override
+    public Map<String, List<ColumnStatistics>> getPartitionColumnStatistics(String dbName, String tableName, List<String> partitionValues, List<String> columnNames) {
+        return awsGlueMetastore.getPartitionColumnStatistics(dbName, tableName, partitionValues, columnNames);
+    }
+
+    @Override
+    public List<ColumnStatistics> getTableColumnStatistics(String dbName, String tableName, List<String> colNames) {
+        return awsGlueMetastore.getTableColumnStatistics(dbName, tableName, colNames);
+    }
+
+    @Override
+    public List<ColumnStatisticsError> updatePartitionColumnStatistics(String dbName, String tableName, List<String> partitionValues, List<ColumnStatistics> columnStatistics) {
+        return awsGlueMetastore.updatePartitionColumnStatistics(dbName, tableName, partitionValues, columnStatistics);
+    }
+
+    @Override
+    public List<ColumnStatisticsError> updateTableColumnStatistics(String dbName, String tableName, List<ColumnStatistics> columnStatistics) {
+        return awsGlueMetastore.updateTableColumnStatistics(dbName, tableName, columnStatistics);
     }
 
 }

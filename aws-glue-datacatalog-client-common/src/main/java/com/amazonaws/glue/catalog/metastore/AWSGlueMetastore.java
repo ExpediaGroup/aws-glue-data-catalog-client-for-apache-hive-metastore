@@ -1,5 +1,7 @@
 package com.amazonaws.glue.catalog.metastore;
 
+import com.amazonaws.services.glue.model.ColumnStatistics;
+import com.amazonaws.services.glue.model.ColumnStatisticsError;
 import com.amazonaws.services.glue.model.Database;
 import com.amazonaws.services.glue.model.DatabaseInput;
 import com.amazonaws.services.glue.model.Partition;
@@ -10,9 +12,11 @@ import com.amazonaws.services.glue.model.Table;
 import com.amazonaws.services.glue.model.TableInput;
 import com.amazonaws.services.glue.model.UserDefinedFunction;
 import com.amazonaws.services.glue.model.UserDefinedFunctionInput;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.thrift.TException;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * This is the accessor interface for using AWS Glue as a metastore.
@@ -44,6 +48,8 @@ public interface AWSGlueMetastore {
 
     void updateTable(String dbName, TableInput tableInput);
 
+    void updateTable(String dbName, TableInput tableInput, EnvironmentContext environmentContext);
+
     void deleteTable(String dbName, String tableName);
 
     Partition getPartition(String dbName, String tableName, List<String> partitionValues);
@@ -68,7 +74,39 @@ public interface AWSGlueMetastore {
 
     List<UserDefinedFunction> getUserDefinedFunctions(String dbName, String pattern);
 
+    List<UserDefinedFunction> getUserDefinedFunctions(String pattern);
+
     void deleteUserDefinedFunction(String dbName, String functionName);
 
     void updateUserDefinedFunction(String dbName, String functionName, UserDefinedFunctionInput functionInput);
+
+    void deletePartitionColumnStatistics(String dbName, String tableName, List<String> partitionValues, String colName);
+
+    void deleteTableColumnStatistics(String dbName, String tableName, String colName);
+
+    Map<String, List<ColumnStatistics>> getPartitionColumnStatistics(
+            String dbName,
+            String tableName,
+            List<String> partitionValues,
+            List<String> columnNames
+    );
+
+    List<ColumnStatistics> getTableColumnStatistics(
+            String dbName,
+            String tableName,
+            List<String> colNames
+    );
+
+    List<ColumnStatisticsError> updatePartitionColumnStatistics(
+           String dbName,
+           String tableName,
+           List<String> partitionValues,
+           List<ColumnStatistics> columnStatistics
+   );
+
+    List<ColumnStatisticsError> updateTableColumnStatistics(
+           String dbName,
+           String tableName,
+           List<ColumnStatistics> columnStatistics
+   );
 }

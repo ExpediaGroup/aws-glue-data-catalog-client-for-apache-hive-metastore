@@ -1,7 +1,6 @@
 package com.amazonaws.glue.catalog.util;
 
 import com.amazonaws.glue.catalog.metastore.AWSGlueMetastore;
-import com.amazonaws.services.glue.AWSGlue;
 import com.amazonaws.services.glue.model.AlreadyExistsException;
 import com.amazonaws.services.glue.model.BatchCreatePartitionRequest;
 import com.amazonaws.services.glue.model.BatchCreatePartitionResult;
@@ -215,8 +214,8 @@ public class BatchCreatePartitionsHelperTest {
   }
 
   private void mockBatchCreateWithFailures(List<PartitionError> errors) {
-    Mockito.when(awsGlueMetastore.createPartitions(Mockito.anyString(), Mockito.anyString(), Mockito.anyList()))
-        .thenReturn(errors);
+    Mockito.when(awsGlueMetastore.createPartitions(Mockito.anyString(), Mockito.anyString(),
+            Mockito.anyList())).thenReturn(errors);
   }
 
   private void mockBatchCreateThrowsException(Exception e) {

@@ -5,7 +5,9 @@ public class AWSGlueDataCatalogHiveClientFactory {//implements HiveMetaStoreClie
 //  @Override
 //  public IMetaStoreClient createMetaStoreClient(
 //      HiveConf conf,
-//      HiveMetaHookLoader hookLoader
+//      HiveMetaHookLoader hookLoader,
+//      boolean allowEmbedded,
+//      ConcurrentHashMap<String, Long> concurrentHashMap
 //  ) throws MetaException {
 //    AWSCatalogMetastoreClient client = new AWSCatalogMetastoreClient(conf, hookLoader);
 //    return client;
