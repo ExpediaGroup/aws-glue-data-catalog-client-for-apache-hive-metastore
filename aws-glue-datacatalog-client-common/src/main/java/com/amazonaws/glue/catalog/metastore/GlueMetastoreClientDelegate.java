@@ -445,28 +445,21 @@ public class GlueMetastoreClientDelegate {
     }
 
     // Fetch current table to get versionId for Iceberg tables optimistic locking
-    Table currentGlueTable = null;
-    try {
-      currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
-      if (isIcebergTable(currentGlueTable)) {
-        String versionId = currentGlueTable.getVersionId();
-        if (versionId != null) {
-          // Store versionId in EnvironmentContext for use in updateTable
-          if (environmentContext == null) {
-            environmentContext = new EnvironmentContext();
-          }
-          if (!environmentContext.isSetProperties()) {
-            environmentContext.setProperties(new java.util.HashMap<>());
-          }
-          environmentContext.getProperties().put("versionId", versionId);
-          logger.info("Detected Iceberg table: " + dbName + "." + oldTableName + 
-                      ". Using versionId: " + versionId + " for optimistic locking");
+    Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
+    if (isIcebergTable(currentGlueTable)) {
+      String versionId = currentGlueTable.getVersionId();
+      if (versionId != null) {
+        // Store versionId in EnvironmentContext for use in updateTable
+        if (environmentContext == null) {
+          environmentContext = new EnvironmentContext();
         }
+        if (!environmentContext.isSetProperties()) {
+          environmentContext.setProperties(new java.util.HashMap<>());
+        }
+        environmentContext.getProperties().put("versionId", versionId);
+        logger.info("Detected Iceberg table: " + dbName + "." + oldTableName + 
+                    ". Using versionId: " + versionId + " for optimistic locking");
       }
-    } catch (AmazonServiceException e) {
-      logger.warn("Unable to fetch table " + dbName + "." + oldTableName + 
-                  " for versionId retrieval: " + e.getMessage() + ". Proceeding without versionId.");
-      // Continue without versionId - update will fail if there's a concurrent modification
     }
 
     TableInput newTableInput = GlueInputConverter.convertToTableInput(newTable);
