@@ -548,16 +548,11 @@ public class GlueMetastoreClientDelegateTest {
     
     metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
 
-    ArgumentCaptor<String> versionIdCaptor = ArgumentCaptor.forClass(String.class);
-    verify(glueMetastore, times(1)).updateTable(
-        eq(testDb.getName()),
-        any(TableInput.class),
-        versionIdCaptor.capture(),
-        any(EnvironmentContext.class)
-    );
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
 
-    // Verify that versionId was passed
-    assertEquals("test-version-123", versionIdCaptor.getValue());
+    // Verify that versionId was passed in the UpdateTableRequest
+    assertEquals("test-version-123", captor.getValue().getVersionId());
   }
 
   @Test
@@ -572,16 +567,11 @@ public class GlueMetastoreClientDelegateTest {
     
     metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
 
-    ArgumentCaptor<String> versionIdCaptor = ArgumentCaptor.forClass(String.class);
-    verify(glueMetastore, times(1)).updateTable(
-        eq(testDb.getName()),
-        any(TableInput.class),
-        versionIdCaptor.capture(),
-        any(EnvironmentContext.class)
-    );
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
 
-    // Verify that versionId was NOT passed (null)
-    assertNull(versionIdCaptor.getValue());
+    // Verify that versionId was NOT passed (null) for non-Iceberg tables
+    assertNull(captor.getValue().getVersionId());
   }
 
   @Test
@@ -601,16 +591,11 @@ public class GlueMetastoreClientDelegateTest {
     
     metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
 
-    ArgumentCaptor<String> versionIdCaptor = ArgumentCaptor.forClass(String.class);
-    verify(glueMetastore, times(1)).updateTable(
-        eq(testDb.getName()),
-        any(TableInput.class),
-        versionIdCaptor.capture(),
-        any(EnvironmentContext.class)
-    );
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
 
     // Verify that versionId was passed as null (no versionId available)
-    assertNull(versionIdCaptor.getValue());
+    assertNull(captor.getValue().getVersionId());
   }
 
   @Test
