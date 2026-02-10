@@ -60,6 +60,7 @@ derby.log
 /aws-glue-datacatalog-spark-client/target/
 /aws-glue-datacatalog-hive3-client/target/
 /aws-glue-datacatalog-client-common/target/
+/aws-glue-datacatalog-client-common/bin/
 /shims/common/target/
 /shims/hive3-shims/target/
 /shims/loader/target/
