@@ -444,6 +444,24 @@ public class GlueMetastoreClientDelegate {
       hiveShims.updateTableStatsFast(db, newTable, wh, false, true, environmentContext);
     }
 
+    // Fetch current table to get versionId for Iceberg tables optimistic locking
+    Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
+    if (isIcebergTable(currentGlueTable)) {
+      String versionId = currentGlueTable.getVersionId();
+      if (versionId != null) {
+        // Store versionId in EnvironmentContext for use in updateTable
+        if (environmentContext == null) {
+          environmentContext = new EnvironmentContext();
+        }
+        if (!environmentContext.isSetProperties()) {
+          environmentContext.setProperties(new java.util.HashMap<>());
+        }
+        environmentContext.getProperties().put("versionId", versionId);
+        logger.info("Detected Iceberg table: " + dbName + "." + oldTableName + 
+                    ". Using versionId: " + versionId + " for optimistic locking");
+      }
+    }
+
     TableInput newTableInput = GlueInputConverter.convertToTableInput(newTable);
 
     try {
@@ -481,6 +499,22 @@ public class GlueMetastoreClientDelegate {
     return environmentContext != null &&
             environmentContext.isSetProperties() &&
             StatsSetupConst.TRUE.equals(environmentContext.getProperties().get(StatsSetupConst.CASCADE));
+  }
+
+  /**
+   * Determines if a table is an Iceberg table by checking its properties.
+   * Iceberg tables typically have 'table_type' parameter set to 'ICEBERG'.
+   *
+   * @param glueTable the AWS Glue table to check
+   * @return true if the table is an Iceberg table, false otherwise
+   */
+  private boolean isIcebergTable(Table glueTable) {
+    if (glueTable == null || glueTable.getParameters() == null) {
+      return false;
+    }
+    String tableType = glueTable.getParameters().get("table_type");
+    // Iceberg tables have table_type = ICEBERG
+    return tableType != null && "ICEBERG".equalsIgnoreCase(tableType);
   }
 
   public void dropTable(

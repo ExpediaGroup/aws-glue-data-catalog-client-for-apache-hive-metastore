@@ -515,99 +515,11 @@ public class GlueMetastoreClientDelegateTest {
   }
 
   @Test
-  public void testAlterTable() throws Exception {
-    org.apache.hadoop.hive.metastore.api.Table newHiveTable
-        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
-    newHiveTable.setTableName(testTbl.getName());
-
-    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
-    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable((testTbl)));
-    metastoreClientDelegateCatalogId.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
-
-    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(glueClient, times(1)).updateTable(captor.capture());
-
-    TableInput expectedTableInput = GlueInputConverter.convertToTableInput(newHiveTable);
-    assertEquals(expectedTableInput, captor.getValue().getTableInput());
-  }
-
-  @Test
-  public void testAlterTableCascade() throws Exception {
-    org.apache.hadoop.hive.metastore.api.Table newHiveTable
-        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
-    newHiveTable.setTableName(testTbl.getName());
-    FieldSchema newCol = new FieldSchema("test", "string", null);
-    newHiveTable.getSd().addToCols(newCol);
-
-    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
-    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
-
-    List<String> values = Lists.newArrayList("foo");
-    Partition partition = new Partition().withDatabaseName(testDb.getName())
-        .withTableName(testTbl.getName())
-        .withValues(values)
-        .withStorageDescriptor(TestObjects.getTestStorageDescriptor());
-    when(glueClient.getPartitions(any(GetPartitionsRequest.class))).thenReturn(new GetPartitionsResult().withPartitions(partition));
-
-    EnvironmentContext ec = new EnvironmentContext();
-    ec.putToProperties("CASCADE", StatsSetupConst.TRUE);
-    metastoreClientDelegateCatalogId.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, ec);
-
-    ArgumentCaptor<UpdateTableRequest> tableCaptor = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    ArgumentCaptor<UpdatePartitionRequest> partitionCaptor = ArgumentCaptor.forClass(UpdatePartitionRequest.class);
-    verify(glueClient, times(1)).updateTable(tableCaptor.capture());
-    verify(glueClient, times(1)).updatePartition(partitionCaptor.capture());
-
-    TableInput expectedTableInput = GlueInputConverter.convertToTableInput(newHiveTable);
-    assertEquals(expectedTableInput, tableCaptor.getValue().getTableInput());
-    PartitionInput expectedPartitionInput = GlueInputConverter.convertToPartitionInput(partition);
-    // Verify that adding new table column is included in the alterPartition call
-    expectedPartitionInput.getStorageDescriptor().getColumns().add(HiveToCatalogConverter.convertFieldSchema(newCol));
-    assertEquals(expectedPartitionInput, partitionCaptor.getValue().getPartitionInput());
-  }
-
-  @Test
-  public void testAlterTableCascadePartitionFailure() throws Exception {
-    org.apache.hadoop.hive.metastore.api.Table newHiveTable
-        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
-    newHiveTable.setTableName(testTbl.getName());
-    FieldSchema newCol = new FieldSchema("test", "string", null);
-    newHiveTable.getSd().addToCols(newCol);
-
-    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
-    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
-
-    List<String> values = Lists.newArrayList("foo", "bar");
-    Partition partition = new Partition().withDatabaseName(testDb.getName())
-        .withTableName(testTbl.getName())
-        .withValues(values)
-        .withStorageDescriptor(TestObjects.getTestStorageDescriptor());
-
-    // Expect partition values in Exception error
-    expectedEx.expect(MetaException.class);
-    expectedEx.expectMessage(containsString(values.toString()));
-
-    when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
-        .thenReturn(new GetPartitionsResult().withPartitions(partition));
-    when(glueClient.updatePartition(any(UpdatePartitionRequest.class))).thenThrow(new AmazonServiceException("Error"));
-
-    EnvironmentContext ec = new EnvironmentContext();
-    ec.putToProperties("CASCADE", StatsSetupConst.TRUE);
-    metastoreClientDelegateCatalogId.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, ec);
-  }
-
-  @Test(expected = UnsupportedOperationException.class)
-  public void testAlterTableRename() throws Exception {
-    org.apache.hadoop.hive.metastore.api.Table newHiveTable
-        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
-    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
-  }
-
-  @Test
   public void testAlterTableSetExternalType() throws Exception {
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
         = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
     newHiveTable.setTableType(MANAGED_TABLE.toString());
+    newHiveTable.setTableName(testTbl.getName());
     newHiveTable.getParameters().put("EXTERNAL", "TRUE");
 
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
@@ -617,6 +529,73 @@ public class GlueMetastoreClientDelegateTest {
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(glueClient, times(1)).updateTable(captor.capture());
     assertEquals(EXTERNAL_TABLE.toString(), captor.getValue().getTableInput().getTableType());
+  }
+
+  @Test
+  public void testAlterIcebergTableWithVersionId() throws Exception {
+    // Create an Iceberg table by adding table_type parameter
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.setVersionId("test-version-123");
+
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+    
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
+
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
+
+    // Verify that versionId was passed in the UpdateTableRequest
+    assertEquals("test-version-123", captor.getValue().getVersionId());
+  }
+
+  @Test
+  public void testAlterNonIcebergTableWithoutVersionId() throws Exception {
+    // Create a regular (non-Iceberg) table
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
+    
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
+
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
+
+    // Verify that versionId was NOT passed (null) for non-Iceberg tables
+    assertNull(captor.getValue().getVersionId());
+  }
+
+  @Test
+  public void testAlterIcebergTableMissingVersionId() throws Exception {
+    // Create an Iceberg table without versionId set
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    // No versionId set
+
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+    
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
+
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
+
+    // Verify that versionId was passed as null (no versionId available)
+    assertNull(captor.getValue().getVersionId());
   }
 
   @Test

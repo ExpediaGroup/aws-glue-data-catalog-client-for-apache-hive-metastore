@@ -224,15 +224,25 @@ public class DefaultAWSGlueMetastore implements AWSGlueMetastore {
 
     @Override
     public void updateTable(String dbName, TableInput tableInput) {
-        UpdateTableRequest updateTableRequest = new UpdateTableRequest().withDatabaseName(dbName)
-                .withTableInput(tableInput).withCatalogId(catalogId);
-        glueClient.updateTable(updateTableRequest);
+        updateTable(dbName, tableInput, null);
     }
 
     @Override
     public void updateTable(String dbName, TableInput tableInput, EnvironmentContext environmentContext) {
-        UpdateTableRequest updateTableRequest = new UpdateTableRequest().withDatabaseName(dbName)
-                .withTableInput(tableInput).withCatalogId(catalogId).withSkipArchive(skipArchive(environmentContext));
+        UpdateTableRequest updateTableRequest = new UpdateTableRequest()
+                .withDatabaseName(dbName)
+                .withTableInput(tableInput)
+                .withCatalogId(catalogId)
+                .withSkipArchive(skipArchive(environmentContext));
+        
+        // Extract versionId from EnvironmentContext if present (for Iceberg tables optimistic locking)
+        if (environmentContext != null && environmentContext.isSetProperties()) {
+            String versionId = environmentContext.getProperties().get("versionId");
+            if (versionId != null && !versionId.isEmpty()) {
+                updateTableRequest.setVersionId(versionId);
+            }
+        }
+        
         glueClient.updateTable(updateTableRequest);
     }
 
