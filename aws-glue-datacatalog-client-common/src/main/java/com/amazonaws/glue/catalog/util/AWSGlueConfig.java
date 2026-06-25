@@ -27,6 +27,21 @@ public final class AWSGlueConfig {
 
     public static final String AWS_GLUE_DISABLE_UDF = "aws.glue.disable-udf";
 
+    /**
+     * When true, an AccessDeniedException whose message contains "Lake Formation" is translated
+     * to NoSuchObjectException (for single-object reads) or treated as not-found (for existence
+     * checks). This is an opt-in workaround for deployments where Lake Formation returns
+     * AccessDeniedException instead of EntityNotFoundException for resources that do not exist,
+     * which happens when the caller lacks CREATE_TABLE permission.
+     *
+     * WARNING: Lake Formation intentionally makes "does not exist" and "permission denied"
+     * indistinguishable (anti-enumeration). Enabling this flag means genuine permission errors
+     * will also be silently converted to not-found responses. Every translation is logged at WARN.
+     * Default: false.
+     */
+    public static final String AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND =
+            "aws.glue.lakeformation.access-denied-as-not-found";
+
 
     public static final String AWS_GLUE_DB_CACHE_ENABLE = "aws.glue.cache.db.enable";
     public static final String AWS_GLUE_DB_CACHE_SIZE = "aws.glue.cache.db.size";

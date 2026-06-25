@@ -99,6 +99,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_DISABLE_UDF;
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.deepCopyMap;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.isExternalTable;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.makeDirs;
@@ -158,8 +159,17 @@ public class GlueMetastoreClientDelegate {
     catalogId = MetastoreClientUtils.getCatalogId(conf);
   }
 
-  private static boolean isLakeFormationAccessDenied(AmazonServiceException e) {
-    return e.getClass().getSimpleName().equals("AccessDeniedException")
+  // LakeFormation intentionally returns AccessDeniedException instead of
+  // EntityNotFoundException to prevent resource enumeration, making "does not exist"
+  // and "permission denied" indistinguishable at this layer. When the config flag
+  // AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND is enabled we interpret an LF
+  // AccessDenied as not-found. WARNING: this knowingly masks genuine permission errors
+  // as missing objects. Every translation is logged at WARN. Default: false (opt-in).
+  // Note: the "Lake Formation" substring in the message is an undocumented AWS convention
+  // and may change; monitor after AWS SDK upgrades.
+  private boolean isLakeFormationAccessDenied(AmazonServiceException e) {
+    return conf.getBoolean(AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND, false)
+        && e.getClass().getSimpleName().equals("AccessDeniedException")
         && e.getMessage() != null
         && e.getMessage().contains("Lake Formation");
   }
@@ -200,6 +210,9 @@ public class GlueMetastoreClientDelegate {
       return catalogToHiveConverter.convertDatabase(catalogDatabase);
     } catch (AmazonServiceException e) {
       if (isLakeFormationAccessDenied(e)) {
+        logger.warn("LakeFormation AccessDeniedException on getDatabase('" + name
+            + "'); translating to NoSuchObjectException. This may mask a genuine permission"
+            + " error — verify IAM/LF grants if the database is expected to exist.", e);
         throw new NoSuchObjectException(name);
       }
       throw catalogToHiveConverter.wrapInHiveException(e);
@@ -349,6 +362,12 @@ public class GlueMetastoreClientDelegate {
     } catch (EntityNotFoundException e) {
       return false;
     } catch (AmazonServiceException e){
+      if (isLakeFormationAccessDenied(e)) {
+        logger.warn("LakeFormation AccessDeniedException on tableExists('" + databaseName + "."
+            + tableName + "'); treating as not-found. This may mask a genuine permission"
+            + " error — verify IAM/LF grants if the table is expected to exist.", e);
+        return false;
+      }
       throw catalogToHiveConverter.wrapInHiveException(e);
     } catch (Exception e){
       String msg = "Unable to check table exist: ";
@@ -367,6 +386,9 @@ public class GlueMetastoreClientDelegate {
       return catalogToHiveConverter.convertTable(table, dbName);
     } catch (AmazonServiceException e) {
       if (isLakeFormationAccessDenied(e)) {
+        logger.warn("LakeFormation AccessDeniedException on getTable('" + dbName + "." + tableName
+            + "'); translating to NoSuchObjectException. This may mask a genuine permission"
+            + " error — verify IAM/LF grants if the table is expected to exist.", e);
         throw new NoSuchObjectException(dbName + "." + tableName);
       }
       throw catalogToHiveConverter.wrapInHiveException(e);

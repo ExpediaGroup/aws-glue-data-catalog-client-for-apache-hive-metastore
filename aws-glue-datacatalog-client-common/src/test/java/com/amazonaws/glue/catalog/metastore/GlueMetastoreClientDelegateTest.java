@@ -97,6 +97,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestDatabase;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestPartition;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestTable;
@@ -254,6 +255,16 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test(expected = NoSuchObjectException.class)
   public void testGetDatabase_lakeFormationAccessDenied_throwsNoSuchObjectException() throws Exception {
+    conf.setBoolean(AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on database");
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenThrow(e);
+    metastoreClientDelegate.getDatabase("testDb");
+  }
+
+  @Test(expected = MetaException.class)
+  public void testGetDatabase_lakeFormationAccessDenied_flagDisabled_throwsMetaException() throws Exception {
+    // Flag is off (default) — LF AccessDenied must NOT be translated; real denials stay visible
     AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on database");
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenThrow(e);
     metastoreClientDelegate.getDatabase("testDb");
@@ -370,6 +381,16 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test(expected = NoSuchObjectException.class)
   public void testGetTable_lakeFormationAccessDenied_throwsNoSuchObjectException() throws Exception {
+    conf.setBoolean(AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on table");
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
+    metastoreClientDelegate.getTable(testDb.getName(), testTbl.getName());
+  }
+
+  @Test(expected = MetaException.class)
+  public void testGetTable_lakeFormationAccessDenied_flagDisabled_throwsMetaException() throws Exception {
+    // Flag is off (default) — LF AccessDenied must NOT be translated; real denials stay visible
     AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on table");
     when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
     metastoreClientDelegate.getTable(testDb.getName(), testTbl.getName());
@@ -380,6 +401,28 @@ public class GlueMetastoreClientDelegateTest {
     AccessDeniedException e = new AccessDeniedException("User is not authorized to perform this action");
     when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
     metastoreClientDelegate.getTable(testDb.getName(), testTbl.getName());
+  }
+
+  @Test
+  public void testTableExists_lakeFormationAccessDenied_flagEnabled_returnsFalse() throws Exception {
+    conf.setBoolean(AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    // databaseExists() (called first inside tableExists) must succeed
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(
+        new GetDatabaseResult().withDatabase(testDb));
+    AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on table");
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
+    assertFalse(metastoreClientDelegate.tableExists(testDb.getName(), testTbl.getName()));
+  }
+
+  @Test(expected = MetaException.class)
+  public void testTableExists_lakeFormationAccessDenied_flagDisabled_throwsMetaException() throws Exception {
+    // Flag is off (default) — LF AccessDenied must NOT be translated
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(
+        new GetDatabaseResult().withDatabase(testDb));
+    AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on table");
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
+    metastoreClientDelegate.tableExists(testDb.getName(), testTbl.getName());
   }
 
   @Test
