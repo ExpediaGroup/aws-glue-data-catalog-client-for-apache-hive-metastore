@@ -158,6 +158,12 @@ public class GlueMetastoreClientDelegate {
     catalogId = MetastoreClientUtils.getCatalogId(conf);
   }
 
+  private static boolean isLakeFormationAccessDenied(AmazonServiceException e) {
+    return e.getClass().getSimpleName().equals("AccessDeniedException")
+        && e.getMessage() != null
+        && e.getMessage().contains("Lake Formation");
+  }
+
   // ======================= Database =======================
 
   public void createDatabase(org.apache.hadoop.hive.metastore.api.Database database) throws TException {
@@ -193,6 +199,9 @@ public class GlueMetastoreClientDelegate {
       Database catalogDatabase = glueMetastore.getDatabase(name);
       return catalogToHiveConverter.convertDatabase(catalogDatabase);
     } catch (AmazonServiceException e) {
+      if (isLakeFormationAccessDenied(e)) {
+        throw new NoSuchObjectException(name);
+      }
       throw catalogToHiveConverter.wrapInHiveException(e);
     } catch (Exception e) {
       String msg = "Unable to get database object: ";
@@ -357,6 +366,9 @@ public class GlueMetastoreClientDelegate {
       validateGlueTable(table);
       return catalogToHiveConverter.convertTable(table, dbName);
     } catch (AmazonServiceException e) {
+      if (isLakeFormationAccessDenied(e)) {
+        throw new NoSuchObjectException(dbName + "." + tableName);
+      }
       throw catalogToHiveConverter.wrapInHiveException(e);
     } catch (Exception e) {
       String msg = "Unable to get table: ";

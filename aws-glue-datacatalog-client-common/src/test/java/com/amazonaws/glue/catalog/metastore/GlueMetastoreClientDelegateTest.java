@@ -8,6 +8,7 @@ import com.amazonaws.glue.catalog.converters.GlueInputConverter;
 import com.amazonaws.glue.catalog.converters.HiveToCatalogConverter;
 import com.amazonaws.glue.catalog.util.TestObjects;
 import com.amazonaws.services.glue.AWSGlue;
+import com.amazonaws.services.glue.model.AccessDeniedException;
 import com.amazonaws.services.glue.model.AlreadyExistsException;
 import com.amazonaws.services.glue.model.BatchCreatePartitionRequest;
 import com.amazonaws.services.glue.model.BatchCreatePartitionResult;
@@ -251,6 +252,20 @@ public class GlueMetastoreClientDelegateTest {
     verify(glueClient, atLeastOnce()).getDatabase(any(GetDatabaseRequest.class));
   }
 
+  @Test(expected = NoSuchObjectException.class)
+  public void testGetDatabase_lakeFormationAccessDenied_throwsNoSuchObjectException() throws Exception {
+    AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on database");
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenThrow(e);
+    metastoreClientDelegate.getDatabase("testDb");
+  }
+
+  @Test(expected = MetaException.class)
+  public void testGetDatabase_plainAccessDenied_throwsMetaException() throws Exception {
+    AccessDeniedException e = new AccessDeniedException("User is not authorized to perform this action");
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenThrow(e);
+    metastoreClientDelegate.getDatabase("testDb");
+  }
+
   @Test
   public void testGetDatabaseWithCatalogId() throws Exception {
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(
@@ -351,6 +366,20 @@ public class GlueMetastoreClientDelegateTest {
     Table tbl = getTestTable().withTableType(null);
     when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
     metastoreClientDelegate.getTable(testDb.getName(), tbl.getName());
+  }
+
+  @Test(expected = NoSuchObjectException.class)
+  public void testGetTable_lakeFormationAccessDenied_throwsNoSuchObjectException() throws Exception {
+    AccessDeniedException e = new AccessDeniedException("Lake Formation permission denied on table");
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
+    metastoreClientDelegate.getTable(testDb.getName(), testTbl.getName());
+  }
+
+  @Test(expected = MetaException.class)
+  public void testGetTable_plainAccessDenied_throwsMetaException() throws Exception {
+    AccessDeniedException e = new AccessDeniedException("User is not authorized to perform this action");
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(e);
+    metastoreClientDelegate.getTable(testDb.getName(), testTbl.getName());
   }
 
   @Test
