@@ -40,12 +40,24 @@ public enum HiveTableValidator {
 
   public abstract void validate(Table table);
 
+  private static final String TABLE_TYPE_PARAM = "table_type";
+  private static final String ICEBERG_TABLE_TYPE = "ICEBERG";
+
   private static boolean notApplicableTableType(Table table) {
     if (isNotManagedOrExternalTable(table) ||
-        isStorageHandlerType(table)) {
+        isStorageHandlerType(table) ||
+        isIcebergTable(table)) {
       return true;
     }
     return false;
+  }
+
+  private static boolean isIcebergTable(Table table) {
+    if (table.getParameters() == null) {
+      return false;
+    }
+    String tableType = table.getParameters().get(TABLE_TYPE_PARAM);
+    return tableType != null && ICEBERG_TABLE_TYPE.equalsIgnoreCase(tableType.trim());
   }
 
   private static boolean isNotManagedOrExternalTable(Table table) {
