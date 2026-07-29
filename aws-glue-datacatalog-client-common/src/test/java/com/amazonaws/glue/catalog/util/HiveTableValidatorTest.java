@@ -89,4 +89,25 @@ public class HiveTableValidatorTest {
     tbl.getStorageDescriptor().setInputFormat(null);
     REQUIRED_PROPERTIES_VALIDATOR.validate(tbl);
   }
+
+  @Test
+  public void testValidate_ExcludeIcebergTableType() {
+    Table tbl = getTestTable();
+    tbl.getParameters().put("table_type", "ICEBERG");
+    tbl.getStorageDescriptor().setInputFormat(null);
+    tbl.getStorageDescriptor().setOutputFormat(null);
+    tbl.getStorageDescriptor().setSerdeInfo(null);
+    REQUIRED_PROPERTIES_VALIDATOR.validate(tbl);
+  }
+
+  @Test
+  public void testValidate_ExcludeIcebergTableType_CaseInsensitive() {
+    Table tbl = getTestTable();
+    tbl.getParameters().put("table_type", "iceberg");
+    tbl.getStorageDescriptor().setInputFormat(null);
+    tbl.getStorageDescriptor().setOutputFormat(null);
+    tbl.getStorageDescriptor().setSerdeInfo(null);
+    REQUIRED_PROPERTIES_VALIDATOR.validate(tbl);
+  }
+
 }
