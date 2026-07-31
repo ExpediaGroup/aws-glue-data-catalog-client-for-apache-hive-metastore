@@ -379,6 +379,27 @@ public class GlueMetastoreClientDelegateTest {
     metastoreClientDelegate.getTable(testDb.getName(), tbl.getName());
   }
 
+  @Test
+  public void testGetTableIcebergWithStrippedStorageDescriptorDoesNotThrow() throws Exception {
+    Table tbl = getTestTable();
+    tbl.getParameters().put("table_type", "ICEBERG");
+    com.amazonaws.services.glue.model.StorageDescriptor sd = tbl.getStorageDescriptor();
+    sd.setInputFormat(null);
+    sd.setOutputFormat(null);
+    sd.setSerdeInfo(null);
+    sd.setCompressed(null);
+    sd.setNumberOfBuckets(null);
+    sd.setStoredAsSubDirectories(null);
+
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
+
+    org.apache.hadoop.hive.metastore.api.Table hiveTable =
+        metastoreClientDelegate.getTable(testDb.getName(), tbl.getName());
+
+    assertNotNull(hiveTable.getSd());
+    assertNotNull(hiveTable.getSd().getSerdeInfo());
+  }
+
   @Test(expected = NoSuchObjectException.class)
   public void testGetTable_lakeFormationAccessDenied_throwsNoSuchObjectException() throws Exception {
     conf.setBoolean(AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND, true);

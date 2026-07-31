@@ -7,6 +7,7 @@ import com.amazonaws.services.glue.model.Order;
 import com.amazonaws.services.glue.model.Partition;
 import com.amazonaws.services.glue.model.SerDeInfo;
 import com.amazonaws.services.glue.model.SkewedInfo;
+import com.amazonaws.services.glue.model.StorageDescriptor;
 import com.amazonaws.services.glue.model.Table;
 import com.amazonaws.services.glue.model.UserDefinedFunction;
 
@@ -198,5 +199,76 @@ public class EntityConversionTest {
     org.apache.hadoop.hive.metastore.api.Table hiveTable = catalogToHiveConverter.convertTable(catalogTable, TEST_DB_NAME);
     assertNotNull(hiveTable.getPartitionKeys());
     assertTrue(hiveTable.getPartitionKeys().isEmpty());
+  }
+
+  @Test
+  public void testConvertStorageDescriptorSerdeInfoNull() {
+    Table catalogTable = TestObjects.getTestTable();
+    catalogTable.getStorageDescriptor().setSerdeInfo(null);
+    org.apache.hadoop.hive.metastore.api.StorageDescriptor hiveSd =
+        catalogToHiveConverter.convertStorageDescriptor(catalogTable.getStorageDescriptor());
+    assertNotNull(hiveSd.getSerdeInfo());
+    assertNull(hiveSd.getSerdeInfo().getName());
+    assertNull(hiveSd.getSerdeInfo().getSerializationLib());
+    assertNotNull(hiveSd.getSerdeInfo().getParameters());
+    assertTrue(hiveSd.getSerdeInfo().getParameters().isEmpty());
+  }
+
+  @Test
+  public void testConvertSerDeInfoDirectlyWithNull() {
+    assertNull(catalogToHiveConverter.convertSerDeInfo(null).getName());
+    assertNotNull(catalogToHiveConverter.convertSerDeInfo(null).getParameters());
+  }
+
+  @Test
+  public void testConvertStorageDescriptorBoxedFieldsNull() {
+    Table catalogTable = TestObjects.getTestTable();
+    catalogTable.getStorageDescriptor().setCompressed(null);
+    catalogTable.getStorageDescriptor().setNumberOfBuckets(null);
+    catalogTable.getStorageDescriptor().setStoredAsSubDirectories(null);
+    org.apache.hadoop.hive.metastore.api.StorageDescriptor hiveSd =
+        catalogToHiveConverter.convertStorageDescriptor(catalogTable.getStorageDescriptor());
+    assertEquals(false, hiveSd.isCompressed());
+    assertEquals(-1, hiveSd.getNumBuckets());
+    assertEquals(false, hiveSd.isStoredAsSubDirectories());
+  }
+
+  @Test
+  public void testConvertIcebergTableWithStrippedStorageDescriptor() {
+    Table catalogTable = TestObjects.getTestTable();
+    catalogTable.getParameters().put("table_type", "ICEBERG");
+    StorageDescriptor sd = catalogTable.getStorageDescriptor();
+    sd.setInputFormat(null);
+    sd.setOutputFormat(null);
+    sd.setSerdeInfo(null);
+    sd.setCompressed(null);
+    sd.setNumberOfBuckets(null);
+    sd.setStoredAsSubDirectories(null);
+
+    org.apache.hadoop.hive.metastore.api.Table hiveTable =
+        catalogToHiveConverter.convertTable(catalogTable, TEST_DB_NAME);
+
+    assertNotNull(hiveTable.getSd());
+    assertNotNull(hiveTable.getSd().getSerdeInfo());
+  }
+
+  @Test
+  public void testConvertPartitionWithStrippedStorageDescriptor() {
+    Partition partition = TestObjects.getTestPartition(TEST_DB_NAME, TEST_TBL_NAME, ImmutableList.of("1"));
+    StorageDescriptor sd = partition.getStorageDescriptor();
+    sd.setInputFormat(null);
+    sd.setOutputFormat(null);
+    sd.setSerdeInfo(null);
+    sd.setCompressed(null);
+    sd.setNumberOfBuckets(null);
+    sd.setStoredAsSubDirectories(null);
+
+    org.apache.hadoop.hive.metastore.api.Partition hivePartition = catalogToHiveConverter.convertPartition(partition);
+
+    assertNotNull(hivePartition.getSd());
+    assertNotNull(hivePartition.getSd().getSerdeInfo());
+    assertEquals(false, hivePartition.getSd().isCompressed());
+    assertEquals(-1, hivePartition.getSd().getNumBuckets());
+    assertEquals(false, hivePartition.getSd().isStoredAsSubDirectories());
   }
 }
