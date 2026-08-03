@@ -186,14 +186,14 @@ public class BaseCatalogToHiveConverter implements CatalogToHiveConverter {
     hiveSd.setLocation(catalogSd.getLocation());
     hiveSd.setInputFormat(catalogSd.getInputFormat());
     hiveSd.setOutputFormat(catalogSd.getOutputFormat());
-    hiveSd.setCompressed(catalogSd.getCompressed());
-    hiveSd.setNumBuckets(catalogSd.getNumberOfBuckets());
+    hiveSd.setCompressed(firstNonNull(catalogSd.getCompressed(), Boolean.FALSE));
+    hiveSd.setNumBuckets(firstNonNull(catalogSd.getNumberOfBuckets(), -1));
     hiveSd.setSerdeInfo(convertSerDeInfo(catalogSd.getSerdeInfo()));
     hiveSd.setBucketCols(firstNonNull(catalogSd.getBucketColumns(), Lists.<String>newArrayList()));
     hiveSd.setSortCols(convertOrderList(catalogSd.getSortColumns()));
     hiveSd.setParameters(firstNonNull(catalogSd.getParameters(), Maps.<String, String>newHashMap()));
     hiveSd.setSkewedInfo(convertSkewedInfo(catalogSd.getSkewedInfo()));
-    hiveSd.setStoredAsSubDirectories(catalogSd.getStoredAsSubDirectories());
+    hiveSd.setStoredAsSubDirectories(firstNonNull(catalogSd.getStoredAsSubDirectories(), Boolean.FALSE));
 
     return hiveSd;
   }
@@ -220,6 +220,10 @@ public class BaseCatalogToHiveConverter implements CatalogToHiveConverter {
 
   public SerDeInfo convertSerDeInfo(com.amazonaws.services.glue.model.SerDeInfo catalogSerDeInfo){
     SerDeInfo hiveSerDeInfo = new SerDeInfo();
+    if (catalogSerDeInfo == null) {
+      hiveSerDeInfo.setParameters(Maps.<String, String>newHashMap());
+      return hiveSerDeInfo;
+    }
     hiveSerDeInfo.setName(catalogSerDeInfo.getName());
     hiveSerDeInfo.setParameters(firstNonNull(catalogSerDeInfo.getParameters(), Maps.<String, String>newHashMap()));
     hiveSerDeInfo.setSerializationLib(catalogSerDeInfo.getSerializationLibrary());
