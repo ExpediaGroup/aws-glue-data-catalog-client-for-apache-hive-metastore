@@ -17,6 +17,8 @@ import org.apache.log4j.Logger;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Utility methods for constructing the string representation of query expressions used by Catalog service
@@ -217,6 +219,67 @@ public final class ExpressionHelper {
 
   public static String replaceDoubleQuoteWithSingleQuotes(String s) {
     return s.replaceAll("\"", "\'");
+  }
+
+  /*
+   * Matches a bare (unquoted) date or timestamp literal that sits immediately after a comparison
+   * operator, an opening parenthesis of an IN list, or a comma inside an IN list.
+   *
+   * Group 1 is the operator / separator and any following whitespace, which is preserved as-is.
+   * Group 2 is the literal itself.
+   *
+   * The (?!') guard means an already-quoted literal is never matched, so this is idempotent and
+   * leaves correctly-formed filters untouched. Because a literal is only matched when it directly
+   * follows an operator or list separator, date-like text inside a quoted string (for example
+   * name = 'report 2026-02-02') is not affected.
+   */
+  private final static Pattern BARE_DATE_OR_TIMESTAMP_LITERAL = Pattern.compile(
+      "((?:>=|<=|<>|!=|=|>|<|\\(|,)\\s*)"
+          + "(?!')"
+          + "(\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)?)"
+          + "(?![\\d'\\-])");
+
+  /**
+   * Quotes bare date and timestamp literals in a filter expression so that the Glue API accepts it.
+   *
+   * <p>Glue requires literals compared against {@code date} / {@code timestamp} partition keys to
+   * be quoted. Hive clients — notably Spark, when it pushes a partition-pruning predicate down
+   * through {@code get_partitions_by_filter} — emit them bare:
+   *
+   * <pre>
+   * event_date &gt;= 2026-02-02 and event_date &lt; 2026-08-04
+   * </pre>
+   *
+   * <p>Glue parses {@code 2026-02-02} as arithmetic rather than a date and answers
+   * {@code InvalidInputException: Invalid partition expression!}. Rewriting it to
+   *
+   * <pre>
+   * event_date &gt;= '2026-02-02' and event_date &lt; '2026-08-04'
+   * </pre>
+   *
+   * <p>makes the call succeed. This mirrors the treatment the serialized-expression path already
+   * gets from {@link #convertHiveExpressionToCatalogExpression(byte[])} via {@code QUOTED_TYPES};
+   * without it, the two partition-filter entry points disagree.
+   *
+   * <p>Only literals in a value position are rewritten, and already-quoted literals are left alone,
+   * so the method is idempotent and safe to apply to filters that are already well-formed. No
+   * partition-key type lookup is needed: a bare date-shaped literal is not valid Glue syntax in any
+   * case, so quoting it is always the correct interpretation.
+   *
+   * @param filter the filter expression, may be null or blank
+   * @return the filter with bare date and timestamp literals quoted
+   */
+  public static String quoteDateAndTimestampLiterals(String filter) {
+    if (Strings.isNullOrEmpty(filter)) {
+      return filter;
+    }
+    Matcher matcher = BARE_DATE_OR_TIMESTAMP_LITERAL.matcher(filter);
+    StringBuffer rewritten = new StringBuffer();
+    while (matcher.find()) {
+      matcher.appendReplacement(rewritten, Matcher.quoteReplacement(matcher.group(1) + "'" + matcher.group(2) + "'"));
+    }
+    matcher.appendTail(rewritten);
+    return rewritten.toString();
   }
 
 }

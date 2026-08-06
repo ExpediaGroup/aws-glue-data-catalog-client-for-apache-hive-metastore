@@ -134,15 +134,11 @@ public class DatePartitionFilterQuotingTest {
   }
 
   /**
-   * Reproduces the bug: {@code listPartitionsByFilter} forwards unquoted date literals to Glue
-   * untouched.
-   *
-   * <p>This test passes against the current code because it asserts the broken behaviour. When the
-   * String-filter path is fixed to quote date literals, this test will fail and should be replaced
-   * by {@link #listPartitionsByFilterShouldQuoteDateLiterals()}.
+   * The bare literals Spark emits are quoted before the request leaves the client, so Glue receives
+   * an expression it can parse.
    */
   @Test
-  public void listPartitionsByFilterForwardsUnquotedDateLiteralsToGlue() throws Exception {
+  public void listPartitionsByFilterQuotesUnquotedDateLiterals() throws Exception {
     when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
         .thenReturn(new GetPartitionsResult().withPartitions(Lists.<Partition>newArrayList()));
 
@@ -153,47 +149,25 @@ public class DatePartitionFilterQuotingTest {
     verify(glueClient).getPartitions(captor.capture());
     String sentToGlue = captor.getValue().getExpression();
 
-    // The expression reaches Glue exactly as Spark wrote it — the date literals are still bare.
-    assertEquals(UNQUOTED_DATE_FILTER, sentToGlue);
+    assertEquals(QUOTED_DATE_FILTER, sentToGlue);
     assertFalse(
-        "date literals reached Glue unquoted, which Glue rejects with InvalidInputException",
-        sentToGlue.contains("'2026-02-02'"));
+        "no bare date literal should survive, got: " + sentToGlue,
+        sentToGlue.contains(" 2026-02-02"));
   }
 
   /**
-   * The behaviour we actually want: date literals should be quoted before the call leaves the
-   * client, matching what the {@code byte[]} expression path already does.
-   *
-   * <p>Expected to fail until the String-filter path is fixed. Ignored so the suite stays green;
-   * remove the {@code @Ignore} as the failing baseline when implementing the fix, and delete
-   * {@link #listPartitionsByFilterForwardsUnquotedDateLiteralsToGlue()} which pins the old
-   * behaviour.
-   */
-  @Ignore("Reproduces the open bug: the String-filter path does not quote date literals. "
-      + "Un-ignore when listPartitionsByFilter is fixed.")
-  @Test
-  public void listPartitionsByFilterShouldQuoteDateLiterals() throws Exception {
-    when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
-        .thenReturn(new GetPartitionsResult().withPartitions(Lists.<Partition>newArrayList()));
-
-    metastoreClient.listPartitionsByFilter(
-        testDB.getName(), testTable.getTableName(), UNQUOTED_DATE_FILTER, (short) -1);
-
-    ArgumentCaptor<GetPartitionsRequest> captor = ArgumentCaptor.forClass(GetPartitionsRequest.class);
-    verify(glueClient).getPartitions(captor.capture());
-
-    assertEquals(QUOTED_DATE_FILTER, captor.getValue().getExpression());
-  }
-
-  /**
-   * Reproduces the exact exception chain the customer saw. Glue answers the malformed expression
-   * with {@code InvalidInputException}; the client converts it to {@code InvalidObjectException},
+   * Documents the exception chain the customer saw, and why it was so opaque. If Glue rejects an
+   * expression, the client converts {@code InvalidInputException} to {@code InvalidObjectException},
    * which is <em>not</em> declared on the {@code get_partitions_by_filter} Thrift method — which is
-   * why Waggle Dance clients only ever see
-   * {@code TApplicationException: Internal error processing get_partitions_by_filter}.
+   * why Waggle Dance clients only ever saw
+   * {@code TApplicationException: Internal error processing get_partitions_by_filter} and never the
+   * real cause.
+   *
+   * <p>The quoting fix means a bare date literal no longer reaches Glue, but this remains the
+   * behaviour for any other malformed expression.
    */
   @Test
-  public void unquotedDateFilterRejectedByGlueSurfacesAsInvalidObjectException() throws Exception {
+  public void filterRejectedByGlueSurfacesAsInvalidObjectException() throws Exception {
     InvalidInputException glueError = new InvalidInputException("Invalid partition expression!");
     glueError.setStatusCode(400);
     glueError.setErrorCode("InvalidInputException");
@@ -202,7 +176,7 @@ public class DatePartitionFilterQuotingTest {
     try {
       metastoreClient.listPartitionsByFilter(
           testDB.getName(), testTable.getTableName(), UNQUOTED_DATE_FILTER, (short) -1);
-      fail("expected Glue to reject the unquoted date expression");
+      fail("expected Glue to reject the expression");
     } catch (InvalidObjectException e) {
       assertTrue(
           "expected Glue's 'Invalid partition expression!' message, got: " + e.getMessage(),
@@ -210,7 +184,7 @@ public class DatePartitionFilterQuotingTest {
     }
   }
 
-  /** Control: the quoted form is forwarded and accepted, so quoting is the only difference. */
+  /** An already-correct filter is left alone, so the rewrite is idempotent. */
   @Test
   public void quotedDateFilterIsForwardedUnchanged() throws Exception {
     when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
@@ -226,12 +200,12 @@ public class DatePartitionFilterQuotingTest {
   }
 
   /**
-   * Demonstrates the asymmetry that explains the bug: the {@code byte[]} expression path already
-   * quotes date literals correctly, because {@code ExpressionHelper}'s {@code QUOTED_TYPES} list
-   * includes {@code date}. Only the String-filter path is missing this treatment.
+   * The two partition-filter entry points now agree: the {@code byte[]} expression path quotes date
+   * literals via {@code ExpressionHelper}'s {@code QUOTED_TYPES}, and the String-filter path reaches
+   * the same result through {@link ExpressionHelper#quoteDateAndTimestampLiterals(String)}.
    */
   @Test
-  public void hiveExpressionPathQuotesDateLiteralsButStringFilterPathDoesNot() throws Exception {
+  public void hiveExpressionPathAndStringFilterPathBothQuoteDateLiterals() throws Exception {
     ExprNodeGenericFuncDesc expr = new ExprBuilder("traveler_one_profiles_search_event_data")
         .val(Date.valueOf("2026-02-02"))
         .dateCol("event_date")
@@ -245,9 +219,41 @@ public class DatePartitionFilterQuotingTest {
         "byte[] expr path is expected to quote date literals, got: " + converted,
         converted.contains("'"));
 
-    // ...whereas the String-filter path leaves an equivalent filter untouched.
+    // ...and the String-filter path now reaches the same result.
     assertEquals(
-        UNQUOTED_DATE_FILTER,
-        ExpressionHelper.replaceDoubleQuoteWithSingleQuotes(UNQUOTED_DATE_FILTER));
+        QUOTED_DATE_FILTER,
+        ExpressionHelper.quoteDateAndTimestampLiterals(UNQUOTED_DATE_FILTER));
+  }
+
+  /** The rewrite must not disturb filters that contain no date literals. */
+  @Test
+  public void nonDateFiltersAreUntouched() {
+    String filter = "region = 'eu' and event_hour > 12 and count <= 2026";
+    assertEquals(filter, ExpressionHelper.quoteDateAndTimestampLiterals(filter));
+  }
+
+  /** Date-like text inside a quoted string literal must not be re-quoted. */
+  @Test
+  public void dateLikeTextInsideQuotedStringIsUntouched() {
+    String filter = "report_name = 'daily 2026-02-02 summary'";
+    assertEquals(filter, ExpressionHelper.quoteDateAndTimestampLiterals(filter));
+  }
+
+  /** Timestamp literals and IN lists are handled too. */
+  @Test
+  public void timestampLiteralsAndInListsAreQuoted() {
+    assertEquals(
+        "ts >= '2026-02-02 10:15:30'",
+        ExpressionHelper.quoteDateAndTimestampLiterals("ts >= 2026-02-02 10:15:30"));
+    assertEquals(
+        "event_date in ('2026-02-02', '2026-02-03')",
+        ExpressionHelper.quoteDateAndTimestampLiterals("event_date in (2026-02-02, 2026-02-03)"));
+  }
+
+  /** Applying the rewrite twice must be a no-op. */
+  @Test
+  public void quotingIsIdempotent() {
+    String once = ExpressionHelper.quoteDateAndTimestampLiterals(UNQUOTED_DATE_FILTER);
+    assertEquals(once, ExpressionHelper.quoteDateAndTimestampLiterals(once));
   }
 }
