@@ -17,7 +17,6 @@ import org.apache.log4j.Logger;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -221,14 +220,25 @@ public final class ExpressionHelper {
     return s.replaceAll("\"", "\'");
   }
 
+  private final static String DATE_OR_TIMESTAMP_LITERAL =
+      "\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)?";
+
   // Bare date/timestamp literal in a value position: after a comparison operator, an IN-list '(',
   // or a ','. The (?!') guard skips already-quoted literals, which keeps this idempotent and
   // leaves date-like text inside strings (name = 'report 2026-02-02') alone.
   private final static Pattern BARE_DATE_OR_TIMESTAMP_LITERAL = Pattern.compile(
       "((?:>=|<=|<>|!=|=|>|<|\\(|,)\\s*)"
           + "(?!')"
-          + "(\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)?)"
+          + "(" + DATE_OR_TIMESTAMP_LITERAL + ")"
           + "(?![\\d'\\-])");
+
+  // BETWEEN needs its own pattern: its two literals are delimited by the keywords themselves
+  // rather than by an operator, so the pattern above cannot anchor on them.
+  private final static Pattern BARE_BETWEEN_RANGE = Pattern.compile(
+      "(\\bbetween\\s+)(?!')(" + DATE_OR_TIMESTAMP_LITERAL + ")"
+          + "(\\s+and\\s+)(?!')(" + DATE_OR_TIMESTAMP_LITERAL + ")"
+          + "(?![\\d'\\-])",
+      Pattern.CASE_INSENSITIVE);
 
   /**
    * Quotes bare date and timestamp literals so Glue accepts the filter, e.g.
@@ -238,18 +248,17 @@ public final class ExpressionHelper {
    * {@code InvalidInputException: Invalid partition expression!}. This mirrors what
    * {@link #convertHiveExpressionToCatalogExpression(byte[])} already does via {@code QUOTED_TYPES}.
    * Matching on literal shape avoids a {@code GetTable} call to look up partition-key types.
+   *
+   * <p>Order relative to {@link #replaceDoubleQuoteWithSingleQuotes(String)} does not matter: a
+   * literal preceded by {@code "} does not match here, since the pattern requires a digit directly
+   * after the operator.
    */
   public static String quoteDateAndTimestampLiterals(String filter) {
     if (Strings.isNullOrEmpty(filter)) {
       return filter;
     }
-    Matcher matcher = BARE_DATE_OR_TIMESTAMP_LITERAL.matcher(filter);
-    StringBuffer rewritten = new StringBuffer();
-    while (matcher.find()) {
-      matcher.appendReplacement(rewritten, Matcher.quoteReplacement(matcher.group(1) + "'" + matcher.group(2) + "'"));
-    }
-    matcher.appendTail(rewritten);
-    return rewritten.toString();
+    String quoted = BARE_BETWEEN_RANGE.matcher(filter).replaceAll("$1'$2'$3'$4'");
+    return BARE_DATE_OR_TIMESTAMP_LITERAL.matcher(quoted).replaceAll("$1'$2'");
   }
 
 }

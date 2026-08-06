@@ -213,4 +213,48 @@ public class DatePartitionFilterQuotingTest {
     String once = ExpressionHelper.quoteDateAndTimestampLiterals(UNQUOTED_DATE_FILTER);
     assertEquals(once, ExpressionHelper.quoteDateAndTimestampLiterals(once));
   }
+
+  /** BETWEEN delimits its literals with keywords, so it needs its own handling. */
+  @Test
+  public void betweenRangesAreQuoted() {
+    assertEquals(
+        "event_date between '2026-02-02' and '2026-08-04'",
+        ExpressionHelper.quoteDateAndTimestampLiterals(
+            "event_date between 2026-02-02 and 2026-08-04"));
+    assertEquals(
+        "event_date BETWEEN '2026-02-02' AND '2026-08-04'",
+        ExpressionHelper.quoteDateAndTimestampLiterals(
+            "event_date BETWEEN 2026-02-02 AND 2026-08-04"));
+    assertEquals(
+        "ts between '2026-02-02 00:00:00' and '2026-08-04 23:59:59'",
+        ExpressionHelper.quoteDateAndTimestampLiterals(
+            "ts between 2026-02-02 00:00:00 and 2026-08-04 23:59:59"));
+  }
+
+  /** An already-quoted BETWEEN range is left alone, keeping the rewrite idempotent. */
+  @Test
+  public void quotedBetweenRangeIsUntouched() {
+    String filter = "event_date between '2026-02-02' and '2026-08-04'";
+    assertEquals(filter, ExpressionHelper.quoteDateAndTimestampLiterals(filter));
+  }
+
+  /**
+   * Double-quoted date literals come out single-quoted exactly once. Verified to hold regardless of
+   * the order of replaceDoubleQuoteWithSingleQuotes and quoteDateAndTimestampLiterals, since a
+   * literal preceded by {@code "} does not match the quoting pattern.
+   */
+  @Test
+  public void doubleQuotedDateLiteralIsNotDoubleQuoted() throws Exception {
+    when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
+        .thenReturn(new GetPartitionsResult().withPartitions(Lists.<Partition>newArrayList()));
+
+    metastoreClient.listPartitionsByFilter(
+        testDB.getName(), testTable.getTableName(),
+        "event_date >= \"2026-02-02\" and event_date < \"2026-08-04\"", (short) -1);
+
+    ArgumentCaptor<GetPartitionsRequest> captor = ArgumentCaptor.forClass(GetPartitionsRequest.class);
+    verify(glueClient).getPartitions(captor.capture());
+
+    assertEquals(QUOTED_DATE_FILTER, captor.getValue().getExpression());
+  }
 }
