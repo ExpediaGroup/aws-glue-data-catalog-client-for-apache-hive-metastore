@@ -41,51 +41,21 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Reproduces the production failure seen through Waggle Dance when Spark prunes partitions on a
- * {@code date}-typed partition key.
+ * Covers the fix for a production failure via Waggle Dance: Spark pruned partitions on a
+ * {@code date} key and sent {@code event_date >= 2026-02-02 and event_date < 2026-08-04}, which
+ * Glue rejected with {@code InvalidInputException: Invalid partition expression!} because the
+ * literals were unquoted.
  *
- * <p>A Spark 3.2 driver issued the Thrift call:
- *
- * <pre>
- * get_partitions_by_filter(
- *     egdp_prod_datascience,
- *     traveler_one_profiles_search_event_data,
- *     "event_date &gt;= 2026-02-02 and event_date &lt; 2026-08-04",
- *     -1)
- * </pre>
- *
- * <p>and Glue rejected it:
- *
- * <pre>
- * InvalidObjectException: Invalid partition expression!
- *   (Service: AWSGlue; Status Code: 400; Error Code: InvalidInputException)
- *   at GlueMetastoreClientDelegate.getCatalogPartitions
- *   at AWSCatalogMetastoreClient.listPartitionsByFilter
- * </pre>
- *
- * <p>The date literals are unquoted. Glue's expression parser requires {@code '2026-02-02'} for a
- * {@code date} partition key; unquoted it is parsed as an arithmetic expression and rejected.
- *
- * <p>The root cause is an asymmetry between the two partition-filter entry points:
- *
- * <ul>
- *   <li>the {@code byte[]} expression path ({@code listPartitionsByExpr}) runs the filter through
- *       {@link ExpressionHelper#convertHiveExpressionToCatalogExpression(byte[])}, which quotes
- *       {@code date}/{@code timestamp} literals via its {@code QUOTED_TYPES} list;</li>
- *   <li>the {@code String} filter path ({@code listPartitionsByFilter}) applies only
- *       {@link ExpressionHelper#replaceDoubleQuoteWithSingleQuotes(String)} and forwards the caller's
- *       string to Glue verbatim — no date quoting is ever applied.</li>
- * </ul>
- *
- * <p>These tests pin the current (broken) behaviour so a fix has a failing baseline to flip.
+ * <p>The {@code byte[]} path already quoted these via {@code QUOTED_TYPES}; the String path did
+ * not. {@link ExpressionHelper#quoteDateAndTimestampLiterals(String)} closes that gap.
  */
 public class DatePartitionFilterQuotingTest {
 
-  /** The exact filter string Waggle Dance logged for the failing production call. */
+  /** The exact filter Waggle Dance logged for the failing call. */
   private static final String UNQUOTED_DATE_FILTER =
       "event_date >= 2026-02-02 and event_date < 2026-08-04";
 
-  /** The same filter in the form Glue accepts, verified against the real service. */
+  /** The form Glue accepts, verified against the real service. */
   private static final String QUOTED_DATE_FILTER =
       "event_date >= '2026-02-02' and event_date < '2026-08-04'";
 
@@ -133,10 +103,7 @@ public class DatePartitionFilterQuotingTest {
         .build();
   }
 
-  /**
-   * The bare literals Spark emits are quoted before the request leaves the client, so Glue receives
-   * an expression it can parse.
-   */
+  /** The bare literals Spark emits are quoted before the request reaches Glue. */
   @Test
   public void listPartitionsByFilterQuotesUnquotedDateLiterals() throws Exception {
     when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
@@ -156,15 +123,9 @@ public class DatePartitionFilterQuotingTest {
   }
 
   /**
-   * Documents the exception chain the customer saw, and why it was so opaque. If Glue rejects an
-   * expression, the client converts {@code InvalidInputException} to {@code InvalidObjectException},
-   * which is <em>not</em> declared on the {@code get_partitions_by_filter} Thrift method — which is
-   * why Waggle Dance clients only ever saw
-   * {@code TApplicationException: Internal error processing get_partitions_by_filter} and never the
-   * real cause.
-   *
-   * <p>The quoting fix means a bare date literal no longer reaches Glue, but this remains the
-   * behaviour for any other malformed expression.
+   * A rejected filter surfaces as {@code InvalidObjectException}, which is not declared on the
+   * {@code get_partitions_by_filter} Thrift method — hence Waggle Dance clients only ever saw
+   * {@code TApplicationException: Internal error processing get_partitions_by_filter}.
    */
   @Test
   public void filterRejectedByGlueSurfacesAsInvalidObjectException() throws Exception {
@@ -199,11 +160,7 @@ public class DatePartitionFilterQuotingTest {
     assertEquals(QUOTED_DATE_FILTER, captor.getValue().getExpression());
   }
 
-  /**
-   * The two partition-filter entry points now agree: the {@code byte[]} expression path quotes date
-   * literals via {@code ExpressionHelper}'s {@code QUOTED_TYPES}, and the String-filter path reaches
-   * the same result through {@link ExpressionHelper#quoteDateAndTimestampLiterals(String)}.
-   */
+  /** Both partition-filter entry points now quote date literals. */
   @Test
   public void hiveExpressionPathAndStringFilterPathBothQuoteDateLiterals() throws Exception {
     ExprNodeGenericFuncDesc expr = new ExprBuilder("traveler_one_profiles_search_event_data")
