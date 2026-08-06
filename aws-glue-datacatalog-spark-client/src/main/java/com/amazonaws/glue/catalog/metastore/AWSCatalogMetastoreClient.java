@@ -1237,6 +1237,8 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
     // since server side does not accept double quote expressions.
     if (StringUtils.isNotBlank(filter)) {
         filter = ExpressionHelper.replaceDoubleQuoteWithSingleQuotes(filter);
+        // Hive clients emit date/timestamp literals unquoted; Glue rejects those.
+        filter = ExpressionHelper.quoteDateAndTimestampLiterals(filter);
     }
     return glueMetastoreClientDelegate.getPartitions(databaseName, tableName, filter, (long) max);
   }
