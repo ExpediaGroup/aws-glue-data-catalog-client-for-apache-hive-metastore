@@ -571,8 +571,6 @@ public class GlueMetastoreClientDelegate {
       throws InvalidOperationException {
     String expectedKey = getEnvironmentContextProperty(environmentContext, "expected_parameter_key");
     String expectedValue = getEnvironmentContextProperty(environmentContext, "expected_parameter_value");
-    // Mirrors HiveAlterHandler's own gate: a null expectedValue means no check was requested,
-    // not that metadata_location is expected to be null.
     if (expectedValue == null || !"metadata_location".equals(expectedKey)) {
       return;
     }
