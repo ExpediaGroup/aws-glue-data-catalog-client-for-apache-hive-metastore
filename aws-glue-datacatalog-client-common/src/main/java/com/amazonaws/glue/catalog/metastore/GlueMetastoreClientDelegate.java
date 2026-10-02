@@ -478,12 +478,38 @@ public class GlueMetastoreClientDelegate {
       hiveShims.updateTableStatsFast(db, newTable, wh, false, true, environmentContext);
     }
 
-    // Fetch current table to get versionId for Iceberg tables optimistic locking
+    // Iceberg's HiveTableOperations detects concurrent commits via a compare-and-swap check
+    // against the table's previous metadata_location. When HMS locking is disabled (our case),
+    // Iceberg sends the value it read at the start of its commit via EnvironmentContext using
+    // the well-known keys below (see org.apache.iceberg.hive.HiveOperationsBase#hmsEnvContext).
+    // That expected value - captured at READ time by the committer - is the actual CAS token;
+    // it must be validated here, before the write, rather than replaced with a value fetched
+    // fresh at WRITE time (which would make the check tautologically pass for whichever writer
+    // happens to land last, defeating the whole point of optimistic locking).
     Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
     if (isIcebergTable(currentGlueTable)) {
+      String expectedKey = getEnvironmentContextProperty(environmentContext, "expected_parameter_key");
+      String expectedValue = getEnvironmentContextProperty(environmentContext, "expected_parameter_value");
+      if ("metadata_location".equals(expectedKey)) {
+        String currentMetadataLocation = currentGlueTable.getParameters() == null
+                ? null : currentGlueTable.getParameters().get("metadata_location");
+        if (!java.util.Objects.equals(expectedValue, currentMetadataLocation)) {
+          // Message format matches Hive's HiveAlterHandler/ObjectStore so that Iceberg's
+          // HiveTableOperations recognizes this as a concurrent-modification conflict (it
+          // string-matches on "The table has been modified. The parameter value for key
+          // 'metadata_location' is") and retries, instead of the commit being silently lost.
+          throw new InvalidOperationException(
+                  "The table has been modified. The parameter value for key 'metadata_location' is '"
+                          + currentMetadataLocation + "'. Expected value was '" + expectedValue + "'");
+        }
+      }
+
+      // Glue's own VersionId check is a secondary guard for the much smaller window between the
+      // check above and the updateTable call below. It is not a substitute for the
+      // metadata_location check: VersionId by itself only reflects the live value at write time,
+      // not the value the committer actually read when it started its commit.
       String versionId = currentGlueTable.getVersionId();
       if (versionId != null) {
-        // Store versionId in EnvironmentContext for use in updateTable
         if (environmentContext == null) {
           environmentContext = new EnvironmentContext();
         }
@@ -491,7 +517,7 @@ public class GlueMetastoreClientDelegate {
           environmentContext.setProperties(new java.util.HashMap<>());
         }
         environmentContext.getProperties().put("versionId", versionId);
-        logger.info("Detected Iceberg table: " + dbName + "." + oldTableName + 
+        logger.info("Detected Iceberg table: " + dbName + "." + oldTableName +
                     ". Using versionId: " + versionId + " for optimistic locking");
       }
     }
@@ -542,6 +568,13 @@ public class GlueMetastoreClientDelegate {
    * @param glueTable the AWS Glue table to check
    * @return true if the table is an Iceberg table, false otherwise
    */
+  private String getEnvironmentContextProperty(EnvironmentContext environmentContext, String key) {
+    if (environmentContext == null || !environmentContext.isSetProperties()) {
+      return null;
+    }
+    return environmentContext.getProperties().get(key);
+  }
+
   private boolean isIcebergTable(Table glueTable) {
     if (glueTable == null || glueTable.getParameters() == null) {
       return false;
