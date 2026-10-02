@@ -587,8 +587,7 @@ public class GlueMetastoreClientDelegate {
    * Passes the table's current Glue VersionId back to Glue on the write in {@code environmentContext}
    * so {@code updateTable} fails atomically server-side if anything else writes to the table between
    * {@link #checkMetadataLocation} reading it and the write actually happening. Secondary guard only:
-   * {@link #checkMetadataLocation} is what catches a writer racing from a stale base; this just closes
-   * the much smaller window between that check and the write below.
+   * {@link #checkMetadataLocation} is what catches a writer racing from a stale base
    *
    * @return environmentContext, creating one if null and currentGlueTable has a versionId
    */
