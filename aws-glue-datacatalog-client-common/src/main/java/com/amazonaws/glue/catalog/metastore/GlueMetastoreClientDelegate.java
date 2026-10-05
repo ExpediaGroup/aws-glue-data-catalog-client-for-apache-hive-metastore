@@ -478,22 +478,10 @@ public class GlueMetastoreClientDelegate {
       hiveShims.updateTableStatsFast(db, newTable, wh, false, true, environmentContext);
     }
 
-    // Fetch current table to get versionId for Iceberg tables optimistic locking
     Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
     if (isIcebergTable(currentGlueTable)) {
-      String versionId = currentGlueTable.getVersionId();
-      if (versionId != null) {
-        // Store versionId in EnvironmentContext for use in updateTable
-        if (environmentContext == null) {
-          environmentContext = new EnvironmentContext();
-        }
-        if (!environmentContext.isSetProperties()) {
-          environmentContext.setProperties(new java.util.HashMap<>());
-        }
-        environmentContext.getProperties().put("versionId", versionId);
-        logger.info("Detected Iceberg table: " + dbName + "." + oldTableName + 
-                    ". Using versionId: " + versionId + " for optimistic locking");
-      }
+      checkMetadataLocation(currentGlueTable, environmentContext);
+      environmentContext = withIcebergVersionId(currentGlueTable, environmentContext, dbName, oldTableName);
     }
 
     TableInput newTableInput = GlueInputConverter.convertToTableInput(newTable);
@@ -535,6 +523,13 @@ public class GlueMetastoreClientDelegate {
             StatsSetupConst.TRUE.equals(environmentContext.getProperties().get(StatsSetupConst.CASCADE));
   }
 
+  private String getEnvironmentContextProperty(EnvironmentContext environmentContext, String key) {
+    if (environmentContext == null || !environmentContext.isSetProperties()) {
+      return null;
+    }
+    return environmentContext.getProperties().get(key);
+  }
+
   /**
    * Determines if a table is an Iceberg table by checking its properties.
    * Iceberg tables typically have 'table_type' parameter set to 'ICEBERG'.
@@ -549,6 +544,73 @@ public class GlueMetastoreClientDelegate {
     String tableType = glueTable.getParameters().get("table_type");
     // Iceberg tables have table_type = ICEBERG
     return tableType != null && "ICEBERG".equalsIgnoreCase(tableType);
+  }
+
+  /**
+   * Replicates the "expected_parameter_key"/"expected_parameter_value" compare-and-swap check
+   * that Hive's own ObjectStore/HiveAlterHandler performs during alter_table, which Iceberg
+   * relies on for optimistic concurrency when HMS locking is disabled (our deployment).
+   * <p>
+   * Iceberg's {@code HiveOperationsBase#hmsEnvContext} sends the metadata_location it read when
+   * it started its commit as this expected value. {@code HiveTableOperations#doCommit} then
+   * string-matches any failure against the message thrown here to classify it as a
+   * CommitFailedException and retry, rather than treating the commit as lost. Throwing
+   * InvalidOperationException (rather than Hive's own MetaException) is fine: that matcher does
+   * a {@code catch (Throwable e)} and only ever inspects the message text.
+   * <p>
+   * See:
+   * <a href="https://github.com/apache/hive/blob/5160d3af392248255f68e41e1e0557eae4d95273/metastore/src/java/org/apache/hadoop/hive/metastore/HiveAlterHandler.java#L129">HiveAlterHandler#alterTable</a>,
+   * <a href="https://github.com/apache/iceberg/blob/apache-iceberg-1.9.1/hive-metastore/src/main/java/org/apache/iceberg/hive/HiveOperationsBase.java">HiveOperationsBase#hmsEnvContext</a>,
+   * <a href="https://github.com/apache/iceberg/blob/apache-iceberg-1.9.1/hive-metastore/src/main/java/org/apache/iceberg/hive/HiveTableOperations.java">HiveTableOperations#doCommit</a>.
+   * <a href="https://github.com/apache/iceberg/blob/apache-iceberg-1.9.1/aws/src/main/java/org/apache/iceberg/aws/glue/GlueTableOperations.java#L265">GlueTableOperations#checkMetadataLocation</a>.
+   *
+   * @throws InvalidOperationException if the table's live metadata_location no longer matches
+   *         the value the committer originally read
+   */
+  private void checkMetadataLocation(Table currentGlueTable, EnvironmentContext environmentContext)
+      throws InvalidOperationException {
+    String expectedKey = getEnvironmentContextProperty(environmentContext, "expected_parameter_key");
+    String expectedValue = getEnvironmentContextProperty(environmentContext, "expected_parameter_value");
+    if (expectedValue == null || !"metadata_location".equals(expectedKey)) {
+      return;
+    }
+    String currentMetadataLocation = currentGlueTable.getParameters() == null
+            ? null : currentGlueTable.getParameters().get("metadata_location");
+    if (!java.util.Objects.equals(expectedValue, currentMetadataLocation)) {
+      throw new InvalidOperationException(
+              "The table has been modified. The parameter value for key 'metadata_location' is '"
+                      + currentMetadataLocation + "'. Expected value was '" + expectedValue + "'");
+    }
+  }
+
+  /**
+   * Passes the table's current Glue VersionId back to Glue on the write in {@code environmentContext}
+   * so {@code updateTable} fails atomically server-side if anything else writes to the table between
+   * {@link #checkMetadataLocation} reading it and the write actually happening. Secondary guard only:
+   * {@link #checkMetadataLocation} is what catches a writer racing from a stale base
+   *
+   * @return environmentContext, creating one if null and currentGlueTable has a versionId
+   */
+  private EnvironmentContext withIcebergVersionId(
+      Table currentGlueTable,
+      EnvironmentContext environmentContext,
+      String dbName,
+      String tableName
+  ) {
+    String versionId = currentGlueTable.getVersionId();
+    if (versionId == null) {
+      return environmentContext;
+    }
+    if (environmentContext == null) {
+      environmentContext = new EnvironmentContext();
+    }
+    if (!environmentContext.isSetProperties()) {
+      environmentContext.setProperties(new java.util.HashMap<>());
+    }
+    environmentContext.getProperties().put("versionId", versionId);
+    logger.info("Detected Iceberg table: " + dbName + "." + tableName +
+                ". Using versionId: " + versionId + " for optimistic locking");
+    return environmentContext;
   }
 
   public void dropTable(

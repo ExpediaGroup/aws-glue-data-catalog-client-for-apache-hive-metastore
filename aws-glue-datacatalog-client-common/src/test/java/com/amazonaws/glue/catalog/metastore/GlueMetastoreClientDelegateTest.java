@@ -692,6 +692,118 @@ public class GlueMetastoreClientDelegateTest {
   }
 
   @Test
+  public void testAlterIcebergTableMetadataLocationMatches() throws Exception {
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://bucket/table/metadata/v1.metadata.json");
+
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    EnvironmentContext environmentContext = new EnvironmentContext();
+    environmentContext.putToProperties("expected_parameter_key", "metadata_location");
+    environmentContext.putToProperties("expected_parameter_value", "s3://bucket/table/metadata/v1.metadata.json");
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, environmentContext);
+
+    verify(glueClient, times(1)).updateTable(any(UpdateTableRequest.class));
+  }
+
+  @Test
+  public void testAlterIcebergTableMetadataLocationMismatchThrows() throws Exception {
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://bucket/table/metadata/v2.metadata.json");
+
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    EnvironmentContext environmentContext = new EnvironmentContext();
+    environmentContext.putToProperties("expected_parameter_key", "metadata_location");
+    environmentContext.putToProperties("expected_parameter_value", "s3://bucket/table/metadata/v1.metadata.json");
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+
+    expectedEx.expect(org.apache.hadoop.hive.metastore.api.InvalidOperationException.class);
+    expectedEx.expectMessage(containsString(
+        "The table has been modified. The parameter value for key 'metadata_location' is"));
+
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, environmentContext);
+
+    verify(glueClient, never()).updateTable(any(UpdateTableRequest.class));
+  }
+
+  @Test
+  public void testAlterIcebergTableWithoutExpectedParameterKeyUnaffected() throws Exception {
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://bucket/table/metadata/v1.metadata.json");
+    icebergTable.setVersionId("test-version-123");
+
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
+
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(glueClient, times(1)).updateTable(captor.capture());
+    assertEquals("test-version-123", captor.getValue().getVersionId());
+  }
+
+  @Test
+  public void testAlterIcebergTableWithNullExpectedValueUnaffected() throws Exception {
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://bucket/table/metadata/v1.metadata.json");
+
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    EnvironmentContext environmentContext = new EnvironmentContext();
+    environmentContext.putToProperties("expected_parameter_key", "metadata_location");
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, environmentContext);
+
+    verify(glueClient, times(1)).updateTable(any(UpdateTableRequest.class));
+  }
+
+  @Test
+  public void testAlterNonIcebergTableWithMetadataLocationExpectationUnaffected() throws Exception {
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
+    newHiveTable.setTableName(testTbl.getName());
+
+    EnvironmentContext environmentContext = new EnvironmentContext();
+    environmentContext.putToProperties("expected_parameter_key", "metadata_location");
+    environmentContext.putToProperties("expected_parameter_value", "s3://bucket/table/metadata/stale.metadata.json");
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
+
+    metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, environmentContext);
+
+    verify(glueClient, times(1)).updateTable(any(UpdateTableRequest.class));
+  }
+
+  @Test
   public void testAlterTableSetManagedType() throws Exception {
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
         = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
