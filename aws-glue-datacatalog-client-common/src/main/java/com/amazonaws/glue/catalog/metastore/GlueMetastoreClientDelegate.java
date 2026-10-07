@@ -481,8 +481,8 @@ public class GlueMetastoreClientDelegate {
     Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
     if (isIcebergTable(currentGlueTable)) {
       checkMetadataLocation(currentGlueTable, environmentContext);
-      environmentContext = withIcebergVersionId(currentGlueTable, environmentContext, dbName, oldTableName);
     }
+    environmentContext = withVersionId(currentGlueTable, environmentContext, dbName, oldTableName);
 
     TableInput newTableInput = GlueInputConverter.convertToTableInput(newTable);
 
@@ -591,7 +591,7 @@ public class GlueMetastoreClientDelegate {
    *
    * @return environmentContext, creating one if null and currentGlueTable has a versionId
    */
-  private EnvironmentContext withIcebergVersionId(
+  private EnvironmentContext withVersionId(
       Table currentGlueTable,
       EnvironmentContext environmentContext,
       String dbName,
@@ -608,8 +608,7 @@ public class GlueMetastoreClientDelegate {
       environmentContext.setProperties(new java.util.HashMap<>());
     }
     environmentContext.getProperties().put("versionId", versionId);
-    logger.info("Detected Iceberg table: " + dbName + "." + tableName +
-                ". Using versionId: " + versionId + " for optimistic locking");
+    logger.info("Using versionId: " + versionId + " for optimistic locking on table: " + dbName + "." + tableName);
     return environmentContext;
   }
 

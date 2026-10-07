@@ -649,22 +649,25 @@ public class GlueMetastoreClientDelegateTest {
   }
 
   @Test
-  public void testAlterNonIcebergTableWithoutVersionId() throws Exception {
-    // Create a regular (non-Iceberg) table
+  public void testAlterNonIcebergTableWithVersionId() throws Exception {
+    // Regular (non-Iceberg) table whose Glue VersionId must also be forwarded for optimistic locking
+    Table plainTable = getTestTable();
+    plainTable.setVersionId("test-version-456");
+
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
-        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
+        = catalogToHiveConverter.convertTable(plainTable, testDb.getName());
     newHiveTable.setTableName(testTbl.getName());
 
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
-    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
-    
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(plainTable));
+
     metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
 
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(glueClient, times(1)).updateTable(captor.capture());
 
-    // Verify that versionId was NOT passed (null) for non-Iceberg tables
-    assertNull(captor.getValue().getVersionId());
+    // Verify that versionId IS passed for non-Iceberg tables too
+    assertEquals("test-version-456", captor.getValue().getVersionId());
   }
 
   @Test
@@ -787,6 +790,7 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test
   public void testAlterNonIcebergTableWithMetadataLocationExpectationUnaffected() throws Exception {
+    // The metadata_location CAS check is Iceberg-specific and must stay a no-op for plain tables
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
         = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
     newHiveTable.setTableName(testTbl.getName());
