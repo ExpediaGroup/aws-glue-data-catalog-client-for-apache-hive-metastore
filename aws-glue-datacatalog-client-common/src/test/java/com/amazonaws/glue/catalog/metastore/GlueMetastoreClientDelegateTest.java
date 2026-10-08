@@ -1972,7 +1972,8 @@ public class GlueMetastoreClientDelegateTest {
       fail("expected InvalidOperationException");
     } catch (InvalidOperationException e) {
       assertTrue(e.getMessage(), e.getMessage().startsWith(
-          "Concurrent modification of table " + testDb.getName() + "." + plainTable.getName()));
+          "The table has been modified. The parameter value for key 'metadata_location' is"));
+      assertTrue(e.getMessage(), e.getMessage().contains(testDb.getName() + "." + plainTable.getName()));
       assertTrue(e.getMessage(), e.getMessage().contains("version 7"));
       assertTrue(e.getCause() instanceof ConcurrentModificationException);
     }
@@ -1998,7 +1999,6 @@ public class GlueMetastoreClientDelegateTest {
     } catch (InvalidOperationException e) {
       assertTrue(e.getMessage(), e.getMessage().startsWith(
           "The table has been modified. The parameter value for key 'metadata_location' is"));
-      assertTrue(e.getMessage(), e.getMessage().contains("s3://b/t/metadata/1.json"));
       // tableExists + the versioned read only: no extra Glue read after the conflict
       verify(glueClient, times(2)).getTable(any(GetTableRequest.class));
     }

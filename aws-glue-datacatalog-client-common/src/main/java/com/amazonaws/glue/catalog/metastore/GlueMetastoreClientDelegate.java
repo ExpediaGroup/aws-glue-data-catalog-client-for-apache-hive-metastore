@@ -617,10 +617,9 @@ public class GlueMetastoreClientDelegate {
 
   /**
    * Glue rejected the write because the table's VersionId moved after alterTable read it, i.e. another
-   * writer committed in between. For Iceberg tables the message reuses the wording Iceberg's
-   * {@code HiveTableOperations#doCommit} matches on, so the commit is retried as a CommitFailedException
-   * instead of being reported as a failed commit. Iceberg only matches the message prefix, so the table is
-   * not re-read to report the winning metadata_location.
+   * writer committed in between. The message starts with the wording Iceberg's
+   * {@code HiveTableOperations#doCommit} matches on, so Iceberg commits are retried as a
+   * CommitFailedException instead of failing. Nothing parses it for Hive tables, so one message serves both.
    */
   private InvalidOperationException concurrentAlterException(
       String dbName,
@@ -629,18 +628,12 @@ public class GlueMetastoreClientDelegate {
       ConcurrentModificationException cause
   ) {
     String qualifiedName = dbName + "." + tableName;
-    String message;
-    if (isIcebergTable(readTable)) {
-      String expected = readTable.getParameters().get("metadata_location");
-      message = "The table has been modified. The parameter value for key 'metadata_location' is no longer '"
-          + expected + "': another writer committed to " + qualifiedName + " after version "
-          + readTable.getVersionId() + " was read";
-    } else {
-      message = "Concurrent modification of table " + qualifiedName + ": it changed in Glue after version "
-          + readTable.getVersionId() + " was read, so this alter was rejected to avoid overwriting the other"
-          + " writer's change. Re-read the table and retry. Glue error: " + cause.getErrorMessage();
-    }
-    logger.warn("alterTable conflict on " + qualifiedName + " (read versionId=" + readTable.getVersionId() + ")");
+    String readVersionId = readTable.getVersionId();
+    String message = "The table has been modified. The parameter value for key 'metadata_location' is"
+        + " not the expected one: another writer committed to " + qualifiedName + " after version "
+        + readVersionId + " was read, so this alter was rejected to avoid overwriting that change."
+        + " Re-read the table and retry. Glue error: " + cause.getErrorMessage();
+    logger.warn("alterTable conflict on " + qualifiedName + " (read versionId=" + readVersionId + ")");
     InvalidOperationException exception = new InvalidOperationException(message);
     exception.initCause(cause);
     return exception;
