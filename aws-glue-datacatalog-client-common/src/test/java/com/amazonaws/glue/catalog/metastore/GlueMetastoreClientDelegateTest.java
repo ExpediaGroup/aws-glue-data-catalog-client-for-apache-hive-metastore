@@ -1984,16 +1984,11 @@ public class GlueMetastoreClientDelegateTest {
     icebergTable.getParameters().put("table_type", "ICEBERG");
     icebergTable.getParameters().put("metadata_location", "s3://b/t/metadata/1.json");
     icebergTable.setVersionId("7");
-    Table moved = getTestTable();
-    moved.getParameters().put("table_type", "ICEBERG");
-    moved.getParameters().put("metadata_location", "s3://b/t/metadata/2.json");
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
         = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase(testDb));
     when(glueClient.getTable(any(GetTableRequest.class)))
-        // tableExists and the versioned read see the original; the re-read after the conflict sees the winner
-        .thenReturn(new GetTableResult().withTable(icebergTable), new GetTableResult().withTable(icebergTable),
-            new GetTableResult().withTable(moved));
+        .thenReturn(new GetTableResult().withTable(icebergTable));
     when(glueClient.updateTable(any(UpdateTableRequest.class)))
         .thenThrow(new ConcurrentModificationException("version mismatch"));
 
@@ -2001,8 +1996,11 @@ public class GlueMetastoreClientDelegateTest {
       metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(), newHiveTable, null);
       fail("expected InvalidOperationException");
     } catch (InvalidOperationException e) {
-      assertEquals("The table has been modified. The parameter value for key 'metadata_location' is "
-          + "'s3://b/t/metadata/2.json'. Expected value was 's3://b/t/metadata/1.json'", e.getMessage());
+      assertTrue(e.getMessage(), e.getMessage().startsWith(
+          "The table has been modified. The parameter value for key 'metadata_location' is"));
+      assertTrue(e.getMessage(), e.getMessage().contains("s3://b/t/metadata/1.json"));
+      // tableExists + the versioned read only: no extra Glue read after the conflict
+      verify(glueClient, times(2)).getTable(any(GetTableRequest.class));
     }
   }
 }

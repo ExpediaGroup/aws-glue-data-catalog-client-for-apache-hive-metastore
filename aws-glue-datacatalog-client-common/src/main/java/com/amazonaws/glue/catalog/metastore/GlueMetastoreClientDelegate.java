@@ -619,7 +619,8 @@ public class GlueMetastoreClientDelegate {
    * Glue rejected the write because the table's VersionId moved after alterTable read it, i.e. another
    * writer committed in between. For Iceberg tables the message reuses the wording Iceberg's
    * {@code HiveTableOperations#doCommit} matches on, so the commit is retried as a CommitFailedException
-   * instead of falling into the slower commit-state-unknown path.
+   * instead of being reported as a failed commit. Iceberg only matches the message prefix, so the table is
+   * not re-read to report the winning metadata_location.
    */
   private InvalidOperationException concurrentAlterException(
       String dbName,
@@ -631,8 +632,9 @@ public class GlueMetastoreClientDelegate {
     String message;
     if (isIcebergTable(readTable)) {
       String expected = readTable.getParameters().get("metadata_location");
-      message = "The table has been modified. The parameter value for key 'metadata_location' is '"
-          + currentMetadataLocation(dbName, tableName) + "'. Expected value was '" + expected + "'";
+      message = "The table has been modified. The parameter value for key 'metadata_location' is no longer '"
+          + expected + "': another writer committed to " + qualifiedName + " after version "
+          + readTable.getVersionId() + " was read";
     } else {
       message = "Concurrent modification of table " + qualifiedName + ": it changed in Glue after version "
           + readTable.getVersionId() + " was read, so this alter was rejected to avoid overwriting the other"
@@ -642,16 +644,6 @@ public class GlueMetastoreClientDelegate {
     InvalidOperationException exception = new InvalidOperationException(message);
     exception.initCause(cause);
     return exception;
-  }
-
-  private String currentMetadataLocation(String dbName, String tableName) {
-    try {
-      Table latest = glueMetastore.getTable(dbName, tableName);
-      return latest.getParameters() == null ? null : latest.getParameters().get("metadata_location");
-    } catch (AmazonServiceException e) {
-      logger.warn("Could not re-read " + dbName + "." + tableName + " after a concurrent modification", e);
-      return null;
-    }
   }
 
   public void dropTable(
