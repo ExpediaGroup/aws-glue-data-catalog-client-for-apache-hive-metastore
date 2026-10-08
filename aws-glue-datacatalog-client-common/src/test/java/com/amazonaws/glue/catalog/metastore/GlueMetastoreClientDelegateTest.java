@@ -12,6 +12,7 @@ import com.amazonaws.services.glue.model.AccessDeniedException;
 import com.amazonaws.services.glue.model.AlreadyExistsException;
 import com.amazonaws.services.glue.model.BatchCreatePartitionRequest;
 import com.amazonaws.services.glue.model.BatchCreatePartitionResult;
+import com.amazonaws.services.glue.model.ConcurrentModificationException;
 import com.amazonaws.services.glue.model.BatchGetPartitionRequest;
 import com.amazonaws.services.glue.model.BatchGetPartitionResult;
 import com.amazonaws.services.glue.model.CreateDatabaseRequest;
@@ -74,6 +75,7 @@ import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.InvalidObjectException;
+import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
@@ -649,22 +651,25 @@ public class GlueMetastoreClientDelegateTest {
   }
 
   @Test
-  public void testAlterNonIcebergTableWithoutVersionId() throws Exception {
-    // Create a regular (non-Iceberg) table
+  public void testAlterNonIcebergTableWithVersionId() throws Exception {
+    // Regular (non-Iceberg) table whose Glue VersionId must also be forwarded for optimistic locking
+    Table plainTable = getTestTable();
+    plainTable.setVersionId("test-version-456");
+
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
-        = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
+        = catalogToHiveConverter.convertTable(plainTable, testDb.getName());
     newHiveTable.setTableName(testTbl.getName());
 
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
-    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
-    
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(plainTable));
+
     metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), newHiveTable, null);
 
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(glueClient, times(1)).updateTable(captor.capture());
 
-    // Verify that versionId was NOT passed (null) for non-Iceberg tables
-    assertNull(captor.getValue().getVersionId());
+    // Verify that versionId IS passed for non-Iceberg tables too
+    assertEquals("test-version-456", captor.getValue().getVersionId());
   }
 
   @Test
@@ -787,6 +792,7 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test
   public void testAlterNonIcebergTableWithMetadataLocationExpectationUnaffected() throws Exception {
+    // The metadata_location CAS check is Iceberg-specific and must stay a no-op for plain tables
     org.apache.hadoop.hive.metastore.api.Table newHiveTable
         = catalogToHiveConverter.convertTable(getTestTable(), testDb.getName());
     newHiveTable.setTableName(testTbl.getName());
@@ -1948,5 +1954,53 @@ public class GlueMetastoreClientDelegateTest {
     assertEquals(testTbl.getName(), request.getName());
     assertEquals(CATALOG_ID, captor.getValue().getCatalogId());
     assertEquals(1, res.size());
+  }
+
+  @Test
+  public void testAlterHiveTableConcurrentModificationIsInformative() throws Exception {
+    Table plainTable = getTestTable();
+    plainTable.setVersionId("7");
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(plainTable, testDb.getName());
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase(testDb));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(plainTable));
+    when(glueClient.updateTable(any(UpdateTableRequest.class)))
+        .thenThrow(new ConcurrentModificationException("version mismatch"));
+
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), plainTable.getName(), newHiveTable, null);
+      fail("expected InvalidOperationException");
+    } catch (InvalidOperationException e) {
+      assertTrue(e.getMessage(), e.getMessage().startsWith(
+          "The table has been modified. The parameter value for key 'metadata_location' is"));
+      assertTrue(e.getMessage(), e.getMessage().contains(testDb.getName() + "." + plainTable.getName()));
+      assertTrue(e.getMessage(), e.getMessage().contains("version 7"));
+      assertTrue(e.getCause() instanceof ConcurrentModificationException);
+    }
+  }
+
+  @Test
+  public void testAlterIcebergTableConcurrentModificationUsesIcebergRetryableMessage() throws Exception {
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://b/t/metadata/1.json");
+    icebergTable.setVersionId("7");
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase(testDb));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(icebergTable));
+    when(glueClient.updateTable(any(UpdateTableRequest.class)))
+        .thenThrow(new ConcurrentModificationException("version mismatch"));
+
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(), newHiveTable, null);
+      fail("expected InvalidOperationException");
+    } catch (InvalidOperationException e) {
+      assertTrue(e.getMessage(), e.getMessage().startsWith(
+          "The table has been modified. The parameter value for key 'metadata_location' is"));
+      // tableExists + the versioned read only: no extra Glue read after the conflict
+      verify(glueClient, times(2)).getTable(any(GetTableRequest.class));
+    }
   }
 }

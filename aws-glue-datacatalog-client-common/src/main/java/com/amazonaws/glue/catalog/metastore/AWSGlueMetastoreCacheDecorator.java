@@ -2,10 +2,12 @@ package com.amazonaws.glue.catalog.metastore;
 
 import com.amazonaws.services.glue.model.Database;
 import com.amazonaws.services.glue.model.Table;
+import com.amazonaws.services.glue.model.TableInput;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.log4j.Logger;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_DB_CACHE_ENABLE;
@@ -120,6 +122,19 @@ public class AWSGlueMetastoreCacheDecorator extends AWSGlueMetastoreBaseDecorato
             result = super.getTable(dbName, tableName);
         }
         return result;
+    }
+
+    @Override
+    public void updateTable(String dbName, TableInput tableInput, EnvironmentContext environmentContext) {
+        invalidateTable(dbName, tableInput.getName());
+        super.updateTable(dbName, tableInput, environmentContext);
+        invalidateTable(dbName, tableInput.getName());
+    }
+
+    private void invalidateTable(String dbName, String tableName) {
+        if (tableCacheEnabled) {
+            tableCache.invalidate(new TableIdentifier(dbName, tableName));
+        }
     }
 
     static class TableIdentifier {

@@ -2,6 +2,7 @@ package com.amazonaws.glue.catalog.metastore;
 
 import com.amazonaws.services.glue.model.Database;
 import com.amazonaws.services.glue.model.Table;
+import com.amazonaws.services.glue.model.TableInput;
 import com.google.common.cache.Cache;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.junit.Before;
@@ -175,4 +176,17 @@ public class AWSGlueMetastoreCacheDecoratorTest {
         verify(tableCache, times(1)).getIfPresent(TABLE_IDENTIFIER);
     }
 
+
+    @Test
+    public void updateTableInvalidatesCachedTableSoNextReadSeesNewVersionId() {
+        AWSGlueMetastoreCacheDecorator cacheDecorator = new AWSGlueMetastoreCacheDecorator(hiveConf, glueMetastore);
+        Table before = new Table().withName(TABLE_NAME).withVersionId("1");
+        Table after = new Table().withName(TABLE_NAME).withVersionId("2");
+        when(glueMetastore.getTable(DB_NAME, TABLE_NAME)).thenReturn(before, after);
+
+        cacheDecorator.getTable(DB_NAME, TABLE_NAME);
+        cacheDecorator.updateTable(DB_NAME, new TableInput().withName(TABLE_NAME), null);
+
+        assertEquals("2", cacheDecorator.getTable(DB_NAME, TABLE_NAME).getVersionId());
+    }
 }

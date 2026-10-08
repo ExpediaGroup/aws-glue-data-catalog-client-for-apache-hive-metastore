@@ -13,6 +13,7 @@ import com.amazonaws.glue.catalog.util.PartitionKey;
 import com.amazonaws.glue.shims.AwsGlueHiveShims;
 import com.amazonaws.glue.shims.ShimsLoader;
 import com.amazonaws.services.glue.model.Column;
+import com.amazonaws.services.glue.model.ConcurrentModificationException;
 import com.amazonaws.services.glue.model.ColumnStatistics;
 import com.amazonaws.services.glue.model.ColumnStatisticsError;
 import com.amazonaws.services.glue.model.Database;
@@ -481,13 +482,15 @@ public class GlueMetastoreClientDelegate {
     Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
     if (isIcebergTable(currentGlueTable)) {
       checkMetadataLocation(currentGlueTable, environmentContext);
-      environmentContext = withIcebergVersionId(currentGlueTable, environmentContext, dbName, oldTableName);
     }
+    environmentContext = withVersionId(currentGlueTable, environmentContext, dbName, oldTableName);
 
     TableInput newTableInput = GlueInputConverter.convertToTableInput(newTable);
 
     try {
       glueMetastore.updateTable(dbName, newTableInput, environmentContext);
+    } catch (ConcurrentModificationException e) {
+      throw concurrentAlterException(dbName, oldTableName, currentGlueTable, e);
     } catch (AmazonServiceException e) {
       throw catalogToHiveConverter.wrapInHiveException(e);
     } catch (Exception e) {
@@ -591,7 +594,7 @@ public class GlueMetastoreClientDelegate {
    *
    * @return environmentContext, creating one if null and currentGlueTable has a versionId
    */
-  private EnvironmentContext withIcebergVersionId(
+  private EnvironmentContext withVersionId(
       Table currentGlueTable,
       EnvironmentContext environmentContext,
       String dbName,
@@ -608,9 +611,32 @@ public class GlueMetastoreClientDelegate {
       environmentContext.setProperties(new java.util.HashMap<>());
     }
     environmentContext.getProperties().put("versionId", versionId);
-    logger.info("Detected Iceberg table: " + dbName + "." + tableName +
-                ". Using versionId: " + versionId + " for optimistic locking");
+    logger.info("Using versionId: " + versionId + " for optimistic locking on table: " + dbName + "." + tableName);
     return environmentContext;
+  }
+
+  /**
+   * Glue rejected the write because the table's VersionId moved after alterTable read it, i.e. another
+   * writer committed in between. The message starts with the wording Iceberg's
+   * {@code HiveTableOperations#doCommit} matches on, so Iceberg commits are retried as a
+   * CommitFailedException instead of failing. Nothing parses it for Hive tables, so one message serves both.
+   */
+  private InvalidOperationException concurrentAlterException(
+      String dbName,
+      String tableName,
+      Table readTable,
+      ConcurrentModificationException cause
+  ) {
+    String qualifiedName = dbName + "." + tableName;
+    String readVersionId = readTable.getVersionId();
+    String message = "The table has been modified. The parameter value for key 'metadata_location' is"
+        + " not the expected one: another writer committed to " + qualifiedName + " after version "
+        + readVersionId + " was read, so this alter was rejected to avoid overwriting that change."
+        + " Re-read the table and retry. Glue error: " + cause.getErrorMessage();
+    logger.warn("alterTable conflict on " + qualifiedName + " (read versionId=" + readVersionId + ")");
+    InvalidOperationException exception = new InvalidOperationException(message);
+    exception.initCause(cause);
+    return exception;
   }
 
   public void dropTable(
