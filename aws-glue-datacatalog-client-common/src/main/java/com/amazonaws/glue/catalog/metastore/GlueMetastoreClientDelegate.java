@@ -13,6 +13,7 @@ import com.amazonaws.glue.catalog.util.PartitionKey;
 import com.amazonaws.glue.shims.AwsGlueHiveShims;
 import com.amazonaws.glue.shims.ShimsLoader;
 import com.amazonaws.services.glue.model.Column;
+import com.amazonaws.services.glue.model.ConcurrentModificationException;
 import com.amazonaws.services.glue.model.ColumnStatistics;
 import com.amazonaws.services.glue.model.ColumnStatisticsError;
 import com.amazonaws.services.glue.model.Database;
@@ -488,6 +489,8 @@ public class GlueMetastoreClientDelegate {
 
     try {
       glueMetastore.updateTable(dbName, newTableInput, environmentContext);
+    } catch (ConcurrentModificationException e) {
+      throw concurrentAlterException(dbName, oldTableName, currentGlueTable, e);
     } catch (AmazonServiceException e) {
       throw catalogToHiveConverter.wrapInHiveException(e);
     } catch (Exception e) {
@@ -610,6 +613,45 @@ public class GlueMetastoreClientDelegate {
     environmentContext.getProperties().put("versionId", versionId);
     logger.info("Using versionId: " + versionId + " for optimistic locking on table: " + dbName + "." + tableName);
     return environmentContext;
+  }
+
+  /**
+   * Glue rejected the write because the table's VersionId moved after alterTable read it, i.e. another
+   * writer committed in between. For Iceberg tables the message reuses the wording Iceberg's
+   * {@code HiveTableOperations#doCommit} matches on, so the commit is retried as a CommitFailedException
+   * instead of falling into the slower commit-state-unknown path.
+   */
+  private InvalidOperationException concurrentAlterException(
+      String dbName,
+      String tableName,
+      Table readTable,
+      ConcurrentModificationException cause
+  ) {
+    String qualifiedName = dbName + "." + tableName;
+    String message;
+    if (isIcebergTable(readTable)) {
+      String expected = readTable.getParameters().get("metadata_location");
+      message = "The table has been modified. The parameter value for key 'metadata_location' is '"
+          + currentMetadataLocation(dbName, tableName) + "'. Expected value was '" + expected + "'";
+    } else {
+      message = "Concurrent modification of table " + qualifiedName + ": it changed in Glue after version "
+          + readTable.getVersionId() + " was read, so this alter was rejected to avoid overwriting the other"
+          + " writer's change. Re-read the table and retry. Glue error: " + cause.getErrorMessage();
+    }
+    logger.warn("alterTable conflict on " + qualifiedName + " (read versionId=" + readTable.getVersionId() + ")");
+    InvalidOperationException exception = new InvalidOperationException(message);
+    exception.initCause(cause);
+    return exception;
+  }
+
+  private String currentMetadataLocation(String dbName, String tableName) {
+    try {
+      Table latest = glueMetastore.getTable(dbName, tableName);
+      return latest.getParameters() == null ? null : latest.getParameters().get("metadata_location");
+    } catch (AmazonServiceException e) {
+      logger.warn("Could not re-read " + dbName + "." + tableName + " after a concurrent modification", e);
+      return null;
+    }
   }
 
   public void dropTable(

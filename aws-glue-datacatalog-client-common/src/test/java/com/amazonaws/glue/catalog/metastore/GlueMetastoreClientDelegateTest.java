@@ -12,6 +12,7 @@ import com.amazonaws.services.glue.model.AccessDeniedException;
 import com.amazonaws.services.glue.model.AlreadyExistsException;
 import com.amazonaws.services.glue.model.BatchCreatePartitionRequest;
 import com.amazonaws.services.glue.model.BatchCreatePartitionResult;
+import com.amazonaws.services.glue.model.ConcurrentModificationException;
 import com.amazonaws.services.glue.model.BatchGetPartitionRequest;
 import com.amazonaws.services.glue.model.BatchGetPartitionResult;
 import com.amazonaws.services.glue.model.CreateDatabaseRequest;
@@ -74,6 +75,7 @@ import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.InvalidObjectException;
+import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
@@ -1952,5 +1954,55 @@ public class GlueMetastoreClientDelegateTest {
     assertEquals(testTbl.getName(), request.getName());
     assertEquals(CATALOG_ID, captor.getValue().getCatalogId());
     assertEquals(1, res.size());
+  }
+
+  @Test
+  public void testAlterHiveTableConcurrentModificationIsInformative() throws Exception {
+    Table plainTable = getTestTable();
+    plainTable.setVersionId("7");
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(plainTable, testDb.getName());
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase(testDb));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(plainTable));
+    when(glueClient.updateTable(any(UpdateTableRequest.class)))
+        .thenThrow(new ConcurrentModificationException("version mismatch"));
+
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), plainTable.getName(), newHiveTable, null);
+      fail("expected InvalidOperationException");
+    } catch (InvalidOperationException e) {
+      assertTrue(e.getMessage(), e.getMessage().startsWith(
+          "Concurrent modification of table " + testDb.getName() + "." + plainTable.getName()));
+      assertTrue(e.getMessage(), e.getMessage().contains("version 7"));
+      assertTrue(e.getCause() instanceof ConcurrentModificationException);
+    }
+  }
+
+  @Test
+  public void testAlterIcebergTableConcurrentModificationUsesIcebergRetryableMessage() throws Exception {
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://b/t/metadata/1.json");
+    icebergTable.setVersionId("7");
+    Table moved = getTestTable();
+    moved.getParameters().put("table_type", "ICEBERG");
+    moved.getParameters().put("metadata_location", "s3://b/t/metadata/2.json");
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(icebergTable, testDb.getName());
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase(testDb));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        // tableExists and the versioned read see the original; the re-read after the conflict sees the winner
+        .thenReturn(new GetTableResult().withTable(icebergTable), new GetTableResult().withTable(icebergTable),
+            new GetTableResult().withTable(moved));
+    when(glueClient.updateTable(any(UpdateTableRequest.class)))
+        .thenThrow(new ConcurrentModificationException("version mismatch"));
+
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(), newHiveTable, null);
+      fail("expected InvalidOperationException");
+    } catch (InvalidOperationException e) {
+      assertEquals("The table has been modified. The parameter value for key 'metadata_location' is "
+          + "'s3://b/t/metadata/2.json'. Expected value was 's3://b/t/metadata/1.json'", e.getMessage());
+    }
   }
 }

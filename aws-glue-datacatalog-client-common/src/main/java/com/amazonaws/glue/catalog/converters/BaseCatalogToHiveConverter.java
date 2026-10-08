@@ -28,6 +28,7 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.metastore.api.FunctionType;
 import org.apache.hadoop.hive.metastore.api.InvalidObjectException;
+import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
@@ -83,6 +84,11 @@ public class BaseCatalogToHiveConverter implements CatalogToHiveConverter {
       .put("OperationTimeoutException", new HiveException() {
         public TException get(String msg) {
           return new MetaException(msg);
+        }
+      })
+      .put("ConcurrentModificationException", new HiveException() {
+        public TException get(String msg) {
+          return new InvalidOperationException(msg);
         }
       })
       .put("EntityNotFoundException", new HiveException() {
