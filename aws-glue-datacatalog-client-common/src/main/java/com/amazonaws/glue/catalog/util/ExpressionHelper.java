@@ -17,6 +17,7 @@ import org.apache.log4j.Logger;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -259,6 +260,58 @@ public final class ExpressionHelper {
     }
     String quoted = BARE_BETWEEN_RANGE.matcher(filter).replaceAll("$1'$2'$3'$4'");
     return BARE_DATE_OR_TIMESTAMP_LITERAL.matcher(quoted).replaceAll("$1'$2'");
+  }
+
+  // A comparison whose left operand is a literal, at the start of an operand: beginning of the
+  // filter, after '(' or after and/or/not. Anchoring on operand start keeps literals that sit on
+  // the right of a comparison, and text inside quoted strings, out of the match.
+  private final static Pattern LITERAL_FIRST_COMPARISON = Pattern.compile(
+      "(^\\s*|\\(\\s*|\\b(?:and|or|not)\\s+)"
+          + "('[^']*'|" + DATE_OR_TIMESTAMP_LITERAL + "|-?\\d+(?:\\.\\d+)?)"
+          + "\\s*(<=|>=|<>|!=|=|<|>)\\s*"
+          + "([A-Za-z_][A-Za-z0-9_]*)"
+          + "(?=\\s|\\)|$)",
+      Pattern.CASE_INSENSITIVE);
+
+  /**
+   * Rewrites comparisons written literal-first into column-first form, e.g.
+   * {@code '2026-10-04' <= acquisition_date} becomes {@code acquisition_date >= '2026-10-04'}.
+   *
+   * <p>Spark's {@code HiveShim.convertFilters} keeps the operand order of the original predicate, so
+   * {@code lit(x) <= col(c)} reaches the metastore literal-first. Hive's filter grammar accepts that,
+   * but Glue only accepts {@code column op value} and rejects it with
+   * {@code InvalidInputException: Invalid partition expression!}.
+   *
+   * <p>Must run before {@link #quoteDateAndTimestampLiterals(String)}, which only quotes literals in
+   * a value position.
+   */
+  public static String moveLiteralsToRightOfComparisons(String filter) {
+    if (Strings.isNullOrEmpty(filter)) {
+      return filter;
+    }
+    Matcher matcher = LITERAL_FIRST_COMPARISON.matcher(filter);
+    StringBuffer rewritten = new StringBuffer();
+    while (matcher.find()) {
+      String replacement = matcher.group(1) + matcher.group(4) + " " + mirror(matcher.group(3)) + " " + matcher.group(2);
+      matcher.appendReplacement(rewritten, Matcher.quoteReplacement(replacement));
+    }
+    matcher.appendTail(rewritten);
+    return rewritten.toString();
+  }
+
+  private static String mirror(String operator) {
+    switch (operator) {
+      case "<":
+        return ">";
+      case "<=":
+        return ">=";
+      case ">":
+        return "<";
+      case ">=":
+        return "<=";
+      default:
+        return operator;
+    }
   }
 
 }

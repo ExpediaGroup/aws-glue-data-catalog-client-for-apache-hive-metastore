@@ -122,6 +122,23 @@ public class DatePartitionFilterQuotingTest {
         sentToGlue.contains(" 2026-02-02"));
   }
 
+  /** Spark's filter for {@code lit(x) <= col(c)} arrives literal-first, which Glue rejects. */
+  @Test
+  public void listPartitionsByFilterMovesLiteralsToTheRightOfComparisons() throws Exception {
+    when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
+        .thenReturn(new GetPartitionsResult().withPartitions(Lists.<Partition>newArrayList()));
+
+    metastoreClient.listPartitionsByFilter(
+        testDB.getName(), testTable.getTableName(),
+        "\"2026-10-04\" <= acquisition_date and acquisition_date < \"2026-10-15\"", (short) -1);
+
+    ArgumentCaptor<GetPartitionsRequest> captor = ArgumentCaptor.forClass(GetPartitionsRequest.class);
+    verify(glueClient).getPartitions(captor.capture());
+
+    assertEquals("acquisition_date >= '2026-10-04' and acquisition_date < '2026-10-15'",
+        captor.getValue().getExpression());
+  }
+
   /**
    * A rejected filter surfaces as {@code InvalidObjectException}, which is not declared on the
    * {@code get_partitions_by_filter} Thrift method — hence Waggle Dance clients only ever saw
