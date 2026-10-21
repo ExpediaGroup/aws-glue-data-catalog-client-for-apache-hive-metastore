@@ -1,5 +1,6 @@
 package com.amazonaws.glue.catalog.metastore;
 
+import com.amazonaws.ClientConfiguration;
 import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.BasicSessionCredentials;
@@ -73,6 +74,16 @@ public class AWSGlueClientFactoryTest {
     verify(conf, atLeastOnce()).getInt(AWS_GLUE_MAX_CONNECTIONS, DEFAULT_MAX_CONNECTIONS);
     verify(conf, atLeastOnce()).getInt(AWS_GLUE_SOCKET_TIMEOUT, DEFAULT_SOCKET_TIMEOUT);
     verify(conf, atLeastOnce()).getInt(AWS_GLUE_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT);
+  }
+
+  @Test
+  public void testGlueClientOnlyRetriesSafeCalls() {
+    when(conf.getInt(AWS_GLUE_MAX_RETRY, DEFAULT_MAX_RETRY)).thenReturn(3);
+
+    ClientConfiguration clientConfiguration = glueClientFactory.buildClientConfiguration(conf);
+
+    assertThat(clientConfiguration.getRetryPolicy().getRetryCondition(), instanceOf(ReadOnlyRetryCondition.class));
+    assertEquals(3, clientConfiguration.getMaxErrorRetry());
   }
 
   @Test

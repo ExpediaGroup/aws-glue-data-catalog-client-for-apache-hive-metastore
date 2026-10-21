@@ -5,6 +5,8 @@ import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.client.builder.AwsClientBuilder;
 import com.amazonaws.regions.Region;
 import com.amazonaws.regions.Regions;
+import com.amazonaws.retry.PredefinedRetryPolicies;
+import com.amazonaws.retry.RetryPolicy;
 import com.amazonaws.services.glue.AWSGlue;
 import com.amazonaws.services.glue.AWSGlueClientBuilder;
 import com.google.common.annotations.VisibleForTesting;
@@ -117,11 +119,15 @@ public final class AWSGlueClientFactory implements GlueClientFactory {
     }
   }
 
-  private ClientConfiguration buildClientConfiguration(Configuration conf) {
+  @VisibleForTesting
+  ClientConfiguration buildClientConfiguration(Configuration conf) {
     // Pass UserAgent to client configuration, which enable CloudTrail to audit UGI info
     // when using Glue Catalog as metastore
     ClientConfiguration clientConfiguration = new ClientConfiguration()
         .withUserAgent(createUserAgent())
+        // Only retry calls that are safe to repeat, see ReadOnlyRetryCondition
+        .withRetryPolicy(new RetryPolicy(new ReadOnlyRetryCondition(),
+            PredefinedRetryPolicies.DEFAULT_BACKOFF_STRATEGY, DEFAULT_MAX_RETRY, true))
         .withMaxErrorRetry(conf.getInt(AWS_GLUE_MAX_RETRY, DEFAULT_MAX_RETRY))
         .withMaxConnections(conf.getInt(AWS_GLUE_MAX_CONNECTIONS, DEFAULT_MAX_CONNECTIONS))
         .withConnectionTimeout(conf.getInt(AWS_GLUE_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT))
