@@ -241,6 +241,20 @@ public class ExpressionHelperTest {
   }
 
   @Test
+  public void testBuildExpressionQuotesParameterisedTypes() throws MetaException {
+    List<FieldSchema> partitionKeys = ImmutableList.of(
+          makeFieldSchema("dq_check_date_utc", "varchar(10)"),
+          makeFieldSchema("flag", "CHAR(1)"),
+          makeFieldSchema("amount", "decimal(10,2)")
+    );
+    when(table.getPartitionKeys()).thenReturn(partitionKeys);
+
+    List<String> partitionValues = Arrays.asList("2026-03-01", "y", "1.50");
+    String expression = ExpressionHelper.buildExpressionFromPartialSpecification(table, partitionValues);
+    assertThat(expression, is("(dq_check_date_utc='2026-03-01') AND (flag='y') AND (amount=1.50)"));
+  }
+
+  @Test
   public void testExpressionConversionWithDateCharAndBooleanColumn() throws Exception {
     ExprNodeGenericFuncDesc expr = new ExprBuilder("fooTable")
             // see https://goo.gl/eGEUh2, Hive uses the same method to convert query string value to Date object

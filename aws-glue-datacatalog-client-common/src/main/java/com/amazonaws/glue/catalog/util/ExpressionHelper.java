@@ -212,8 +212,18 @@ public final class ExpressionHelper {
     return s.replaceAll("'", "\\\\'");
   }
 
+  // Compares the base type name, so parameterised types like varchar(10) and char(1) are quoted
+  // too. Glue rejects their values unquoted with "Invalid partition expression!".
   private static boolean isQuotedType(String type) {
-    return QUOTED_TYPES.contains(type);
+    if (type == null) {
+      return false;
+    }
+    String baseType = type.toLowerCase();
+    int paren = baseType.indexOf('(');
+    if (paren >= 0) {
+      baseType = baseType.substring(0, paren);
+    }
+    return QUOTED_TYPES.contains(baseType.trim());
   }
 
   public static String replaceDoubleQuoteWithSingleQuotes(String s) {

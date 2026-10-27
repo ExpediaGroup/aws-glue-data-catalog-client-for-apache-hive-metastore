@@ -706,6 +706,29 @@ public class AWSCatalogMetastoreClientTest {
     verify(glueClient).getPartitions(expectedRequest);
   }
 
+  // Spark's ALTER TABLE ... DROP PARTITION on a varchar(10) key reaches Glue via this call. An
+  // unquoted value is rejected by Glue with "Invalid partition expression!".
+  @Test
+  public void testListPartitionsWithAuthInfoQuotesVarcharPartitionValue() throws Exception {
+    String dbName = "default";
+    String tblName = "foo";
+    Table glueTable = HiveToCatalogConverter.convertTable(testTable);
+    glueTable.setPartitionKeys(ImmutableList.of(new Column().withName("dq_check_date_utc").withType("varchar(10)")));
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class)))
+        .thenReturn(new GetDatabaseResult().withDatabase(HiveToCatalogConverter.convertDatabase(testDB)));
+    when(glueClient.getTable(any(GetTableRequest.class)))
+        .thenReturn(new GetTableResult().withTable(glueTable));
+    when(glueClient.getPartitions(any(GetPartitionsRequest.class)))
+        .thenReturn(new GetPartitionsResult().withPartitions(ImmutableList.<Partition>of()));
+
+    metastoreClient.listPartitionsWithAuthInfo(dbName, tblName, ImmutableList.of("2026-03-01"), (short) -1, null, null);
+
+    ArgumentCaptor<GetPartitionsRequest> captor = ArgumentCaptor.forClass(GetPartitionsRequest.class);
+    verify(glueClient).getPartitions(captor.capture());
+    assertEquals("(dq_check_date_utc='2026-03-01')", captor.getValue().getExpression());
+  }
+
   @Test
   public void testRenamePartitionForHiveManagedTable() throws Exception {
     String dbName = testDB.getName();
