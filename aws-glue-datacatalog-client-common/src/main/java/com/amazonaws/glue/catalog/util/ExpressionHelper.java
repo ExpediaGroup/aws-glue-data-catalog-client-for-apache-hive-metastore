@@ -112,8 +112,7 @@ public final class ExpressionHelper {
       return;
     } else {
       for (ExprNodeDesc nodeDesc : exprNodes) {
-        String nodeType = nodeDesc.getTypeString().toLowerCase();
-        if (QUOTED_TYPES.contains(nodeType)) {
+        if (isQuotedType(nodeDesc.getTypeString())) {
           PrimitiveTypeInfo tInfo = new PrimitiveTypeInfo();
           tInfo.setTypeName(HIVE_STRING_TYPE_NAME);
           nodeDesc.setTypeInfo(tInfo);

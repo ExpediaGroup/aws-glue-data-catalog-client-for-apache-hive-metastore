@@ -5,6 +5,7 @@ import com.amazonaws.glue.shims.ShimsLoader;
 import com.amazonaws.services.glue.model.Table;
 
 import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.hive.common.type.HiveVarchar;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
@@ -266,6 +267,16 @@ public class ExpressionHelperTest {
     String catalogExpression = ExpressionHelper.convertHiveExpressionToCatalogExpression(payload);
     assertEquals("((booleanCol = true) and ((charCol = 'c') and (dateCol = '2017-11-14')))",
             catalogExpression);
+  }
+
+  @Test
+  public void testExpressionConversionWithParameterisedVarcharColumn() throws Exception {
+    ExprNodeGenericFuncDesc expr = new ExprBuilder("fooTable")
+            .val(new HiveVarchar("2026-03-01", 10)).varcharCol("dq_check_date_utc", 10).pred("=", 2).build();
+    byte[] payload = hiveShims.getSerializeExpression(expr);
+
+    String catalogExpression = ExpressionHelper.convertHiveExpressionToCatalogExpression(payload);
+    assertEquals("(dq_check_date_utc = '2026-03-01')", catalogExpression);
   }
 
   @Test
