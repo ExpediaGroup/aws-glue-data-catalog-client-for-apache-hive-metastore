@@ -1,5 +1,6 @@
 package com.amazonaws.glue.catalog.util;
 
+import org.apache.hadoop.hive.common.type.HiveVarchar;
 import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
@@ -62,6 +63,10 @@ public class ExprBuilder {
     return colInternal(TypeInfoFactory.charTypeInfo, col, true);
   }
 
+  public ExprBuilder varcharCol(String col, int length) {
+    return colInternal(TypeInfoFactory.getVarcharTypeInfo(length), col, true);
+  }
+
   public ExprBuilder dateCol(String col) {
     return colInternal(TypeInfoFactory.dateTypeInfo, col, true);
   }
@@ -92,6 +97,10 @@ public class ExprBuilder {
 
   public ExprBuilder val(Character val) {
     return valInternal(TypeInfoFactory.charTypeInfo, val);
+  }
+
+  public ExprBuilder val(HiveVarchar val) {
+    return valInternal(TypeInfoFactory.getVarcharTypeInfo(val.getCharacterLength()), val);
   }
 
   public ExprBuilder val(Date val) {
