@@ -344,6 +344,10 @@ public class HiveToCatalogConverter {
   }
 
   private static com.amazonaws.services.glue.model.DecimalNumber convertDecimal(Decimal hiveDecimal) {
+    // low/high value is unset when the column is all NULL
+    if (hiveDecimal == null) {
+      return null;
+    }
     com.amazonaws.services.glue.model.DecimalNumber catalogDecimal =
         new com.amazonaws.services.glue.model.DecimalNumber();
     catalogDecimal.setUnscaledValue(ByteBuffer.wrap(hiveDecimal.getUnscaled()));

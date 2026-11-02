@@ -523,6 +523,10 @@ public class BaseCatalogToHiveConverter implements CatalogToHiveConverter {
   }
 
   private Decimal convertDecimal(com.amazonaws.services.glue.model.DecimalNumber catalogDecimal) {
+    // MinimumValue/MaximumValue are optional in Glue decimal stats
+    if (catalogDecimal == null) {
+      return null;
+    }
     Decimal hiveDecimal = new Decimal();
     hiveDecimal.setUnscaled(catalogDecimal.getUnscaledValue());
     hiveDecimal.setScale(catalogDecimal.getScale().shortValue());
