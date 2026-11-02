@@ -124,15 +124,20 @@ import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.utils.ObjectPair;
+import org.apache.hadoop.hive.serde2.avro.AvroObjectInspectorGenerator;
+import org.apache.hadoop.hive.serde2.avro.AvroSerDe;
+import org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils;
 import org.apache.log4j.Logger;
 import org.apache.thrift.TException;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -1136,12 +1141,62 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
   @Override
   public List<FieldSchema> getFields(String db, String tableName) throws MetaException, TException,
         UnknownTableException, UnknownDBException {
-    return glueMetastoreClientDelegate.getFields(db, tableName);
+    return getFields(db, tableName, false);
   }
 
   @Override
   public List<FieldSchema> getFields(String catalogName, String db, String tableName) throws MetaException, TException, UnknownTableException, UnknownDBException {
-    return glueMetastoreClientDelegate.getFields(db, tableName);
+    return getFields(db, tableName, false);
+  }
+
+  /**
+   * Like Hive's metastore, an Avro table with avro.schema.url or avro.schema.literal takes its columns from that schema:
+   * the columns stored in Glue are a copy that can be stale. Other tables use the stored columns.
+   */
+  private List<FieldSchema> getFields(String db, String tableName, boolean withPartitionKeys) throws TException {
+    Table table = glueMetastoreClientDelegate.getTable(db, tableName);
+    List<FieldSchema> fields = new ArrayList<>(isAvroTableWithSchemaSet(table) ? getAvroFields(table) : table.getSd().getCols());
+    if (withPartitionKeys && table.getPartitionKeys() != null) {
+      fields.addAll(table.getPartitionKeys());
+    }
+    return fields;
+  }
+
+  private static boolean isAvroTableWithSchemaSet(Table table) {
+    SerDeInfo serdeInfo = table.getSd() == null ? null : table.getSd().getSerdeInfo();
+    if (serdeInfo == null || !AvroSerDe.class.getName().equals(serdeInfo.getSerializationLib())) {
+      return false;
+    }
+    for (Map<String, String> parameters : Lists.newArrayList(table.getParameters(), serdeInfo.getParameters())) {
+      if (parameters != null
+          && (parameters.get(AvroSerdeUtils.AvroTableProperties.SCHEMA_URL.getPropName()) != null
+          || parameters.get(AvroSerdeUtils.AvroTableProperties.SCHEMA_LITERAL.getPropName()) != null)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private List<FieldSchema> getAvroFields(Table table) {
+    try {
+      // Throws when the schema can't be read; AvroSerDe would instead return a placeholder error schema
+      org.apache.avro.Schema schema = AvroSerdeUtils.determineSchemaOrThrowException(conf, MetaStoreUtils.getTableMetadata(table));
+      AvroObjectInspectorGenerator generator = new AvroObjectInspectorGenerator(schema);
+      List<String> comments = AvroObjectInspectorGenerator.generateColumnComments(schema);
+      List<FieldSchema> fields = new ArrayList<>();
+      for (int i = 0; i < generator.getColumnNames().size(); i++) {
+        // lower case names, as Hive's metastore returns them
+        fields.add(new FieldSchema(
+            generator.getColumnNames().get(i).toLowerCase(Locale.ROOT),
+            generator.getColumnTypes().get(i).getTypeName(),
+            comments.get(i)));
+      }
+      return fields;
+    } catch (Exception e) {
+      logger.warn("Unable to read the Avro schema of " + table.getDbName() + "." + table.getTableName()
+          + ", using the columns stored in Glue", e);
+      return table.getSd().getCols();
+    }
   }
 
   @Override
@@ -1300,12 +1355,12 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
   @Override
   public List<FieldSchema> getSchema(String db, String tableName) throws MetaException, TException, UnknownTableException,
         UnknownDBException {
-    return glueMetastoreClientDelegate.getSchema(db, tableName);
+    return getFields(db, tableName, true);
   }
 
   @Override
   public List<FieldSchema> getSchema(String catalogName, String db, String tableName) throws MetaException, TException, UnknownTableException, UnknownDBException {
-    return glueMetastoreClientDelegate.getSchema(db, tableName);
+    return getFields(db, tableName, true);
   }
 
   @Override
