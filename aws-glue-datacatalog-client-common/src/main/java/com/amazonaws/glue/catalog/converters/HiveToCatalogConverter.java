@@ -312,8 +312,8 @@ public class HiveToCatalogConverter {
         DoubleColumnStatisticsData catalogDoubleData = new DoubleColumnStatisticsData();
         catalogDoubleData.setNumberOfNulls(hiveDoubleData.getNumNulls());
         catalogDoubleData.setNumberOfDistinctValues(hiveDoubleData.getNumDVs());
-        catalogDoubleData.setMaximumValue(hiveDoubleData.getHighValue());
-        catalogDoubleData.setMinimumValue(hiveDoubleData.getLowValue());
+        catalogDoubleData.setMaximumValue(convertDouble(hiveDoubleData.isSetHighValue(), hiveDoubleData.getHighValue()));
+        catalogDoubleData.setMinimumValue(convertDouble(hiveDoubleData.isSetLowValue(), hiveDoubleData.getLowValue()));
         catalogColumnStatisticsData.setType(String.valueOf(ColumnStatisticsType.DOUBLE));
         catalogColumnStatisticsData.setDoubleColumnStatisticsData(catalogDoubleData);
         break;
@@ -353,6 +353,14 @@ public class HiveToCatalogConverter {
     catalogDecimal.setUnscaledValue(ByteBuffer.wrap(hiveDecimal.getUnscaled()));
     catalogDecimal.setScale((int)hiveDecimal.getScale());
     return catalogDecimal;
+  }
+
+  private static Double convertDouble(boolean isSet, double hiveDouble) {
+    // Glue's JSON API can't carry NaN or Infinity, and an unset bound would otherwise be sent as 0.0
+    if (!isSet || !Double.isFinite(hiveDouble)) {
+      return null;
+    }
+    return hiveDouble;
   }
 
 }

@@ -488,8 +488,13 @@ public class BaseCatalogToHiveConverter implements CatalogToHiveConverter {
       case DOUBLE:
         DoubleColumnStatisticsData catalogDoubleData = catalogColumnStatisticsData.getDoubleColumnStatisticsData();
         DoubleColumnStatsData hiveDoubleData = new DoubleColumnStatsData();
-        hiveDoubleData.setLowValue(catalogDoubleData.getMinimumValue());
-        hiveDoubleData.setHighValue(catalogDoubleData.getMaximumValue());
+        // MinimumValue/MaximumValue are optional in Glue double stats; unboxing a null throws
+        if (catalogDoubleData.getMinimumValue() != null) {
+          hiveDoubleData.setLowValue(catalogDoubleData.getMinimumValue());
+        }
+        if (catalogDoubleData.getMaximumValue() != null) {
+          hiveDoubleData.setHighValue(catalogDoubleData.getMaximumValue());
+        }
         hiveDoubleData.setNumDVs(catalogDoubleData.getNumberOfDistinctValues());
         hiveDoubleData.setNumNulls(catalogDoubleData.getNumberOfNulls());
 
