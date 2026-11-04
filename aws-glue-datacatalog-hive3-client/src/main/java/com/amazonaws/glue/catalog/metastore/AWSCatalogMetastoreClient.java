@@ -145,6 +145,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.isExternalTable;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.hadoop.hive.metastore.Warehouse.DEFAULT_DATABASE_COMMENT;
@@ -1150,10 +1151,16 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
   }
 
   /**
-   * Like Hive's metastore, an Avro table with avro.schema.url or avro.schema.literal takes its columns from that schema:
-   * the columns stored in Glue are a copy that can be stale. Other tables use the stored columns.
+   * With AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE, like Hive's metastore, an Avro table with avro.schema.url or
+   * avro.schema.literal takes its columns from that schema: the columns stored in Glue are a copy that can be stale.
+   * Other tables, and all tables with the flag off, use the stored columns.
    */
   private List<FieldSchema> getFields(String db, String tableName, boolean withPartitionKeys) throws TException {
+    if (!conf.getBoolean(AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE, false)) {
+      return withPartitionKeys
+          ? glueMetastoreClientDelegate.getSchema(db, tableName)
+          : glueMetastoreClientDelegate.getFields(db, tableName);
+    }
     Table table = glueMetastoreClientDelegate.getTable(db, tableName);
     List<FieldSchema> fields = new ArrayList<>(isAvroTableWithSchemaSet(table) ? getAvroFields(table) : table.getSd().getCols());
     if (withPartitionKeys && table.getPartitionKeys() != null) {
@@ -1169,12 +1176,17 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
     }
     for (Map<String, String> parameters : Lists.newArrayList(table.getParameters(), serdeInfo.getParameters())) {
       if (parameters != null
-          && (parameters.get(AvroSerdeUtils.AvroTableProperties.SCHEMA_URL.getPropName()) != null
-          || parameters.get(AvroSerdeUtils.AvroTableProperties.SCHEMA_LITERAL.getPropName()) != null)) {
+          && (isAvroSchemaSet(parameters.get(AvroSerdeUtils.AvroTableProperties.SCHEMA_URL.getPropName()))
+          || isAvroSchemaSet(parameters.get(AvroSerdeUtils.AvroTableProperties.SCHEMA_LITERAL.getPropName())))) {
         return true;
       }
     }
     return false;
+  }
+
+  // Hive treats "none" as unset for both properties
+  private static boolean isAvroSchemaSet(String value) {
+    return value != null && !AvroSerdeUtils.SCHEMA_NONE.equals(value);
   }
 
   private List<FieldSchema> getAvroFields(Table table) {

@@ -16,9 +16,13 @@ import org.apache.hadoop.hive.serde2.avro.AvroSerDe;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestTable;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Matchers.any;
@@ -37,6 +41,7 @@ public class AvroSchemaFieldsTest {
       + "{\"name\":\"Name\",\"type\":[\"null\",\"string\"],\"doc\":\"display name\"},"
       + "{\"name\":\"added_later\",\"type\":\"int\"}]}";
 
+  private Configuration conf;
   private AWSGlue glueClient;
   private AWSCatalogMetastoreClient metastoreClient;
 
@@ -49,7 +54,8 @@ public class AvroSchemaFieldsTest {
     when(wh.mkdirs(defaultWhPath)).thenReturn(true);
     when(wh.getDefaultDatabasePath(any(String.class))).thenReturn(defaultWhPath);
 
-    Configuration conf = spy(MetastoreConf.newMetastoreConf());
+    conf = spy(MetastoreConf.newMetastoreConf());
+    conf.setBoolean(AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE, true);
     glueClient = spy(AWSGlue.class);
     GlueClientFactory clientFactory = mock(GlueClientFactory.class);
     AWSGlueMetastoreFactory metastoreFactory = mock(AWSGlueMetastoreFactory.class);
@@ -82,6 +88,30 @@ public class AvroSchemaFieldsTest {
   }
 
   @Test
+  public void flagOffUsesStoredColumns() throws Exception {
+    conf.setBoolean(AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE, false);
+    Table table = avroTable(ImmutableMap.of("avro.schema.literal", AVRO_SCHEMA));
+
+    List<FieldSchema> fields = metastoreClient.getFields(table.getDatabaseName(), table.getName());
+    assertEquals(1, fields.size());
+    assertEquals("stale", fields.get(0).getName());
+  }
+
+  @Test
+  public void schemaNoneIsTreatedAsUnset() throws Exception {
+    // a "none" literal is skipped and the url is used, as in Hive
+    Table table = avroTable(ImmutableMap.of("avro.schema.literal", "none", "avro.schema.url", schemaFile()));
+    assertEquals(3, metastoreClient.getFields(table.getDatabaseName(), table.getName()).size());
+
+    // only a "none" literal: the stored columns as-is, not rebuilt through an Avro schema (which lower-cases names)
+    table = avroTable(ImmutableMap.of("avro.schema.literal", "none"));
+    table.getStorageDescriptor().setColumns(Lists.newArrayList(new Column().withName("Stale").withType("string")));
+    List<FieldSchema> fields = metastoreClient.getFields(table.getDatabaseName(), table.getName());
+    assertEquals(1, fields.size());
+    assertEquals("Stale", fields.get(0).getName());
+  }
+
+  @Test
   public void unreadableSchemaUrlFallsBackToStoredColumns() throws Exception {
     Table table = avroTable(ImmutableMap.of("avro.schema.url", "file:///does/not/exist.avsc"));
 
@@ -107,6 +137,13 @@ public class AvroSchemaFieldsTest {
     table.getStorageDescriptor().setColumns(Lists.newArrayList(new Column().withName("stale").withType("string")));
     stubGetTable(table);
     return table;
+  }
+
+  private static String schemaFile() throws Exception {
+    File file = File.createTempFile("schema", ".avsc");
+    file.deleteOnExit();
+    Files.write(file.toPath(), AVRO_SCHEMA.getBytes(StandardCharsets.UTF_8));
+    return file.toURI().toString();
   }
 
   private void stubGetTable(Table table) {
