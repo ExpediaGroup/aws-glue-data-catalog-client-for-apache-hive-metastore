@@ -42,6 +42,14 @@ public final class AWSGlueConfig {
     public static final String AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND =
             "aws.glue.lakeformation.access-denied-as-not-found";
 
+    /**
+     * When true, the Hive 3 client answers get_fields/get_schema for an Avro table with avro.schema.url or
+     * avro.schema.literal from that schema, as Hive's metastore does, instead of from the columns stored in Glue.
+     * A schema URL is read on every call, so the process needs a filesystem for its scheme and read access to it.
+     * If the schema can't be read, the stored columns are returned and a warning is logged. Default: false.
+     */
+    public static final String AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE = "aws.glue.avro.schema-from-url.enable";
+
 
     public static final String AWS_GLUE_DB_CACHE_ENABLE = "aws.glue.cache.db.enable";
     public static final String AWS_GLUE_DB_CACHE_SIZE = "aws.glue.cache.db.size";
