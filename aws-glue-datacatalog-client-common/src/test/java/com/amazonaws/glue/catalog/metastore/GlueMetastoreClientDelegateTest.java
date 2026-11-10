@@ -99,6 +99,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_RENAME_ENABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestDatabase;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestPartition;
@@ -823,6 +824,107 @@ public class GlueMetastoreClientDelegateTest {
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(glueClient, times(1)).updateTable(captor.capture());
     assertEquals(MANAGED_TABLE.toString(), captor.getValue().getTableInput().getTableType());
+  }
+
+  private org.apache.hadoop.hive.metastore.api.Table renamedTo(Table glueTable, String newName) throws Exception {
+    org.apache.hadoop.hive.metastore.api.Table newHiveTable
+        = catalogToHiveConverter.convertTable(glueTable, testDb.getName());
+    newHiveTable.setTableName(newName);
+    return newHiveTable;
+  }
+
+  private GetTableRequest getTableRequest(String tableName) {
+    return new GetTableRequest().withDatabaseName(testDb.getName()).withName(tableName);
+  }
+
+  @Test
+  public void testRenameRefusedWhenFlagOff() throws Exception {
+    // Default: the rename flag is off, so behaviour is unchanged
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+
+    expectedEx.expect(UnsupportedOperationException.class);
+    expectedEx.expectMessage(containsString("Table rename is not supported"));
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(),
+          renamedTo(icebergTable, icebergTable.getName() + "_renamed"), null);
+    } finally {
+      verify(glueClient, never()).createTable(any(CreateTableRequest.class));
+      verify(glueClient, never()).deleteTable(any(DeleteTableRequest.class));
+    }
+  }
+
+  @Test
+  public void testRenameIcebergTable() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.getParameters().put("metadata_location", "s3://bucket/table/metadata/v3.metadata.json");
+    icebergTable.setVersionId("7");
+    String newName = icebergTable.getName() + "_renamed";
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(getTableRequest(icebergTable.getName()))).thenReturn(new GetTableResult().withTable(icebergTable));
+    when(glueClient.getTable(getTableRequest(newName))).thenThrow(new EntityNotFoundException("not found"));
+
+    metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(), renamedTo(icebergTable, newName), null);
+
+    ArgumentCaptor<CreateTableRequest> created = ArgumentCaptor.forClass(CreateTableRequest.class);
+    verify(glueClient).createTable(created.capture());
+    assertEquals(newName, created.getValue().getTableInput().getName());
+    assertEquals("s3://bucket/table/metadata/v3.metadata.json",
+        created.getValue().getTableInput().getParameters().get("metadata_location"));
+    ArgumentCaptor<DeleteTableRequest> deleted = ArgumentCaptor.forClass(DeleteTableRequest.class);
+    verify(glueClient).deleteTable(deleted.capture());
+    assertEquals(icebergTable.getName(), deleted.getValue().getName());
+    verify(glueClient, never()).updateTable(any(UpdateTableRequest.class));
+  }
+
+  @Test
+  public void testRenameNonIcebergTableThrows() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
+    String newName = testTbl.getName() + "_renamed";
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(getTableRequest(testTbl.getName()))).thenReturn(new GetTableResult().withTable(testTbl));
+    when(glueClient.getTable(getTableRequest(newName))).thenThrow(new EntityNotFoundException("not found"));
+
+    expectedEx.expect(InvalidOperationException.class);
+    expectedEx.expectMessage(containsString("Table rename is not supported for non-Iceberg Glue tables"));
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), renamedTo(testTbl, newName), null);
+    } finally {
+      verify(glueClient, never()).createTable(any(CreateTableRequest.class));
+      verify(glueClient, never()).deleteTable(any(DeleteTableRequest.class));
+    }
+  }
+
+  @Test
+  public void testRenameIcebergTableUndoneWhenCommittedToDuringRename() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+    icebergTable.setVersionId("7");
+    Table committedMeanwhile = getTestTable().withName(icebergTable.getName()).withVersionId("8");
+    String newName = icebergTable.getName() + "_renamed";
+
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    // tableExists, then the read the copy is made from, then the re-read before the delete
+    when(glueClient.getTable(getTableRequest(icebergTable.getName()))).thenReturn(
+        new GetTableResult().withTable(icebergTable),
+        new GetTableResult().withTable(icebergTable),
+        new GetTableResult().withTable(committedMeanwhile));
+    when(glueClient.getTable(getTableRequest(newName))).thenThrow(new EntityNotFoundException("not found"));
+
+    expectedEx.expect(InvalidOperationException.class);
+    expectedEx.expectMessage(containsString("so the rename was undone"));
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(), renamedTo(icebergTable, newName), null);
+    } finally {
+      // Only the new copy is removed; the old table, with the newer commit, stays
+      ArgumentCaptor<DeleteTableRequest> deleted = ArgumentCaptor.forClass(DeleteTableRequest.class);
+      verify(glueClient).deleteTable(deleted.capture());
+      assertEquals(newName, deleted.getValue().getName());
+    }
   }
 
   @Test(expected=UnsupportedOperationException.class)

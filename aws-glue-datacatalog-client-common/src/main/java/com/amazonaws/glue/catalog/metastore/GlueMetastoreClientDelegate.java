@@ -100,6 +100,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_DISABLE_UDF;
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_RENAME_ENABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.deepCopyMap;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.isExternalTable;
@@ -456,7 +457,11 @@ public class GlueMetastoreClientDelegate {
     checkNotNull(newTable, "newTable cannot be null");
 
     if (!oldTableName.equalsIgnoreCase(newTable.getTableName())) {
-      throw new UnsupportedOperationException("Table rename is not supported");
+      if (!conf.getBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, false)) {
+        throw new UnsupportedOperationException("Table rename is not supported");
+      }
+      renameIcebergTable(dbName, oldTableName, newTable, environmentContext);
+      return;
     }
 
     validateTableObject(newTable, conf);
@@ -517,6 +522,90 @@ public class GlueMetastoreClientDelegate {
         logger.error(msg, e);
         throw new MetaException(msg + e);
       }
+    }
+  }
+
+  /**
+   * Glue has no rename API, so an Iceberg table is renamed by creating the new Glue table from the live
+   * old one and then deleting the old one, as Iceberg's own {@code GlueCatalog#renameTable} does. This is
+   * cheap and safe for Iceberg only: its whole state is the metadata_location parameter, with no Glue
+   * partitions to copy. Hive tables are still rejected, now with an InvalidOperationException rather than
+   * an UnsupportedOperationException, which thrift cannot return to the client and drops the connection on.
+   * <p>
+   * Not atomic: both names exist between the two calls. The old table is re-read before the delete, and the
+   * rename is undone if its VersionId moved, so an Iceberg commit that lands on the old name mid-rename is
+   * not lost by deleting it. A commit between that re-read and the delete can still be lost.
+   * <p>
+   * See <a href="https://github.com/apache/iceberg/blob/apache-iceberg-1.9.1/aws/src/main/java/org/apache/iceberg/aws/glue/GlueCatalog.java">GlueCatalog#renameTable</a>.
+   */
+  private void renameIcebergTable(
+      String dbName,
+      String oldTableName,
+      org.apache.hadoop.hive.metastore.api.Table newTable,
+      EnvironmentContext environmentContext
+  ) throws TException {
+    String newDbName = dbName;
+    String newTableName = newTable.getTableName();
+    String from = dbName + "." + oldTableName;
+    String to = newDbName + "." + newTableName;
+
+    if (newTable.getDbName() != null && !dbName.equalsIgnoreCase(newTable.getDbName())) {
+      throw new InvalidOperationException("Renaming a table to another database is not supported: " + from
+          + " to " + newTable.getDbName() + "." + newTableName);
+    }
+    if (!tableExists(dbName, oldTableName)) {
+      throw new UnknownTableException("Table: " + oldTableName + " does not exist");
+    }
+    if (tableExists(newDbName, newTableName)) {
+      throw new AlreadyExistsException("Table already exists: " + to);
+    }
+
+    Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
+    if (!isIcebergTable(currentGlueTable)) {
+      throw new InvalidOperationException("Table rename is not supported for non-Iceberg Glue tables: " + from);
+    }
+    checkMetadataLocation(currentGlueTable, environmentContext);
+
+    // From the live Glue table, not the client's copy, so the newest metadata_location is carried over
+    TableInput newTableInput = GlueInputConverter.convertToTableInput(currentGlueTable).withName(newTableName);
+    try {
+      glueMetastore.createTable(newDbName, newTableInput);
+    } catch (AmazonServiceException e) {
+      throw catalogToHiveConverter.wrapInHiveException(e);
+    } catch (Exception e) {
+      String msg = "Unable to rename table " + from + " to " + to + ": ";
+      logger.error(msg, e);
+      throw new MetaException(msg + e);
+    }
+
+    try {
+      Table reread = glueMetastore.getTable(dbName, oldTableName);
+      if (!java.util.Objects.equals(currentGlueTable.getVersionId(), reread.getVersionId())) {
+        throw new InvalidOperationException("The table has been modified. " + from + " was committed to while"
+            + " being renamed to " + to + ", so the rename was undone. Retry the rename.");
+      }
+      glueMetastore.deleteTable(dbName, oldTableName);
+    } catch (Exception e) {
+      undoRenameCreate(newDbName, newTableName, from);
+      if (e instanceof TException) {
+        throw (TException) e;
+      }
+      if (e instanceof AmazonServiceException) {
+        throw catalogToHiveConverter.wrapInHiveException((AmazonServiceException) e);
+      }
+      String msg = "Unable to rename table " + from + " to " + to + ": ";
+      logger.error(msg, e);
+      throw new MetaException(msg + e);
+    }
+    logger.info("Renamed Iceberg table " + from + " to " + to);
+  }
+
+  private void undoRenameCreate(String newDbName, String newTableName, String from) {
+    try {
+      glueMetastore.deleteTable(newDbName, newTableName);
+    } catch (Exception e) {
+      logger.error("Rename of " + from + " failed and " + newDbName + "." + newTableName
+          + " could not be removed; both tables now exist and must be cleaned up by hand", e);
     }
   }
 
