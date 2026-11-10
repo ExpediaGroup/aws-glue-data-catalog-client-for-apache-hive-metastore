@@ -99,6 +99,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_RENAME_ENABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestDatabase;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestPartition;
@@ -837,7 +838,25 @@ public class GlueMetastoreClientDelegateTest {
   }
 
   @Test
+  public void testRenameRefusedWhenFlagOff() throws Exception {
+    // Default: the rename flag is off, so behaviour is unchanged
+    Table icebergTable = getTestTable();
+    icebergTable.getParameters().put("table_type", "ICEBERG");
+
+    expectedEx.expect(UnsupportedOperationException.class);
+    expectedEx.expectMessage(containsString("Table rename is not supported"));
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(),
+          renamedTo(icebergTable, icebergTable.getName() + "_renamed"), null);
+    } finally {
+      verify(glueClient, never()).createTable(any(CreateTableRequest.class));
+      verify(glueClient, never()).deleteTable(any(DeleteTableRequest.class));
+    }
+  }
+
+  @Test
   public void testRenameIcebergTable() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
     Table icebergTable = getTestTable();
     icebergTable.getParameters().put("table_type", "ICEBERG");
     icebergTable.getParameters().put("metadata_location", "s3://bucket/table/metadata/v3.metadata.json");
@@ -863,6 +882,7 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test
   public void testRenameNonIcebergTableThrows() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
     String newName = testTbl.getName() + "_renamed";
     when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
     when(glueClient.getTable(getTableRequest(testTbl.getName()))).thenReturn(new GetTableResult().withTable(testTbl));
@@ -880,6 +900,7 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test
   public void testRenameIcebergTableUndoneWhenCommittedToDuringRename() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
     Table icebergTable = getTestTable();
     icebergTable.getParameters().put("table_type", "ICEBERG");
     icebergTable.setVersionId("7");

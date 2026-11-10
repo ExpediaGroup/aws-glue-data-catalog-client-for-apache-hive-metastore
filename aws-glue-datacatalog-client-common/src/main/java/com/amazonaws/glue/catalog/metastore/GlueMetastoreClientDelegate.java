@@ -100,6 +100,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_DISABLE_UDF;
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_RENAME_ENABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.deepCopyMap;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.isExternalTable;
@@ -456,6 +457,9 @@ public class GlueMetastoreClientDelegate {
     checkNotNull(newTable, "newTable cannot be null");
 
     if (!oldTableName.equalsIgnoreCase(newTable.getTableName())) {
+      if (!conf.getBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, false)) {
+        throw new UnsupportedOperationException("Table rename is not supported");
+      }
       renameIcebergTable(dbName, oldTableName, newTable, environmentContext);
       return;
     }

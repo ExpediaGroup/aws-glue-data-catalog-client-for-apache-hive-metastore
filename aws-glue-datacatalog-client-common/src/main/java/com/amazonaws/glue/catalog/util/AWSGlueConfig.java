@@ -50,6 +50,13 @@ public final class AWSGlueConfig {
      */
     public static final String AWS_GLUE_AVRO_SCHEMA_FROM_URL_ENABLE = "aws.glue.avro.schema-from-url.enable";
 
+    /**
+     * When true, alterTable renames Iceberg tables by creating the new Glue table and deleting the old one, as
+     * Iceberg's GlueCatalog does. Not atomic: see GlueMetastoreClientDelegate#renameIcebergTable. Hive tables are
+     * still refused. When false, any rename throws UnsupportedOperationException as before. Default: false.
+     */
+    public static final String AWS_GLUE_ICEBERG_RENAME_ENABLE = "aws.glue.iceberg.rename.enable";
+
 
     public static final String AWS_GLUE_DB_CACHE_ENABLE = "aws.glue.cache.db.enable";
     public static final String AWS_GLUE_DB_CACHE_SIZE = "aws.glue.cache.db.size";
