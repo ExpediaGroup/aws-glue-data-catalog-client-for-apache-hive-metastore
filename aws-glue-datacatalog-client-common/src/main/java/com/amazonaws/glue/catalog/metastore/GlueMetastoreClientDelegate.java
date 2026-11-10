@@ -554,7 +554,7 @@ public class GlueMetastoreClientDelegate {
           + " to " + newTable.getDbName() + "." + newTableName);
     }
     if (!tableExists(dbName, oldTableName)) {
-      throw new UnknownTableException("Table: " + oldTableName + " does not exists");
+      throw new UnknownTableException("Table: " + oldTableName + " does not exist");
     }
     if (tableExists(newDbName, newTableName)) {
       throw new AlreadyExistsException("Table already exists: " + to);
