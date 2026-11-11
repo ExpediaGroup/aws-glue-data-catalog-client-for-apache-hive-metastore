@@ -839,11 +839,10 @@ public class GlueMetastoreClientDelegateTest {
 
   @Test
   public void testRenameRefusedWhenFlagOff() throws Exception {
-    // Default: the rename flag is off, so behaviour is unchanged
     Table icebergTable = getTestTable();
     icebergTable.getParameters().put("table_type", "ICEBERG");
 
-    expectedEx.expect(UnsupportedOperationException.class);
+    expectedEx.expect(InvalidOperationException.class);
     expectedEx.expectMessage(containsString("Table rename is not supported"));
     try {
       metastoreClientDelegate.alterTable(testDb.getName(), icebergTable.getName(),
@@ -878,6 +877,41 @@ public class GlueMetastoreClientDelegateTest {
     verify(glueClient).deleteTable(deleted.capture());
     assertEquals(icebergTable.getName(), deleted.getValue().getName());
     verify(glueClient, never()).updateTable(any(UpdateTableRequest.class));
+  }
+
+  @Test
+  public void testRenameRefusedWhenSourceMissing() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
+    String newName = testTbl.getName() + "_renamed";
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(getTableRequest(testTbl.getName()))).thenThrow(new EntityNotFoundException("not found"));
+
+    expectedEx.expect(InvalidOperationException.class);
+    expectedEx.expectMessage(containsString("table does not exist"));
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), renamedTo(testTbl, newName), null);
+    } finally {
+      verify(glueClient, never()).createTable(any(CreateTableRequest.class));
+      verify(glueClient, never()).deleteTable(any(DeleteTableRequest.class));
+    }
+  }
+
+  @Test
+  public void testRenameRefusedWhenTargetExists() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, true);
+    String newName = testTbl.getName() + "_renamed";
+    when(glueClient.getDatabase(any(GetDatabaseRequest.class))).thenReturn(new GetDatabaseResult().withDatabase((testDb)));
+    when(glueClient.getTable(getTableRequest(testTbl.getName()))).thenReturn(new GetTableResult().withTable(testTbl));
+    when(glueClient.getTable(getTableRequest(newName))).thenReturn(new GetTableResult().withTable(testTbl));
+
+    expectedEx.expect(InvalidOperationException.class);
+    expectedEx.expectMessage(containsString("table already exists"));
+    try {
+      metastoreClientDelegate.alterTable(testDb.getName(), testTbl.getName(), renamedTo(testTbl, newName), null);
+    } finally {
+      verify(glueClient, never()).createTable(any(CreateTableRequest.class));
+      verify(glueClient, never()).deleteTable(any(DeleteTableRequest.class));
+    }
   }
 
   @Test

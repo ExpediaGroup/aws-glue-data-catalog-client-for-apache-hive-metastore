@@ -53,7 +53,7 @@ public final class AWSGlueConfig {
     /**
      * When true, alterTable renames Iceberg tables by creating the new Glue table and deleting the old one, as
      * Iceberg's GlueCatalog does. Not atomic: see GlueMetastoreClientDelegate#renameIcebergTable. Hive tables are
-     * still refused. When false, any rename throws UnsupportedOperationException as before. Default: false.
+     * still refused. When false, any rename throws InvalidOperationException. Default: false.
      */
     public static final String AWS_GLUE_ICEBERG_RENAME_ENABLE = "aws.glue.iceberg.rename.enable";
 

@@ -458,7 +458,8 @@ public class GlueMetastoreClientDelegate {
 
     if (!oldTableName.equalsIgnoreCase(newTable.getTableName())) {
       if (!conf.getBoolean(AWS_GLUE_ICEBERG_RENAME_ENABLE, false)) {
-        throw new UnsupportedOperationException("Table rename is not supported");
+        throw new InvalidOperationException("Table rename is not supported: " + dbName + "." + oldTableName
+            + " to " + newTable.getTableName());
       }
       renameIcebergTable(dbName, oldTableName, newTable, environmentContext);
       return;
@@ -529,8 +530,9 @@ public class GlueMetastoreClientDelegate {
    * Glue has no rename API, so an Iceberg table is renamed by creating the new Glue table from the live
    * old one and then deleting the old one, as Iceberg's own {@code GlueCatalog#renameTable} does. This is
    * cheap and safe for Iceberg only: its whole state is the metadata_location parameter, with no Glue
-   * partitions to copy. Hive tables are still rejected, now with an InvalidOperationException rather than
-   * an UnsupportedOperationException, which thrift cannot return to the client and drops the connection on.
+   * partitions to copy. Hive tables are still rejected. Every refusal is an InvalidOperationException, the only
+   * checked exception besides MetaException that thrift's alter_table can return to the client; any other
+   * exception drops the connection without a reply.
    * <p>
    * Not atomic: both names exist between the two calls. The old table is re-read before the delete, and the
    * rename is undone if its VersionId moved, so an Iceberg commit that lands on the old name mid-rename is
@@ -554,10 +556,10 @@ public class GlueMetastoreClientDelegate {
           + " to " + newTable.getDbName() + "." + newTableName);
     }
     if (!tableExists(dbName, oldTableName)) {
-      throw new UnknownTableException("Table: " + oldTableName + " does not exist");
+      throw new InvalidOperationException("Cannot rename " + from + ": table does not exist");
     }
     if (tableExists(newDbName, newTableName)) {
-      throw new AlreadyExistsException("Table already exists: " + to);
+      throw new InvalidOperationException("Cannot rename " + from + " to " + to + ": table already exists");
     }
 
     Table currentGlueTable = glueMetastore.getTable(dbName, oldTableName);
