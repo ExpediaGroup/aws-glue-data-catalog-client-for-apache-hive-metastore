@@ -26,6 +26,7 @@ import com.amazonaws.services.glue.model.Table;
 import com.amazonaws.services.glue.model.TableInput;
 import com.amazonaws.services.glue.model.UserDefinedFunction;
 import com.amazonaws.services.glue.model.UserDefinedFunctionInput;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -98,8 +99,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_DISABLE_UDF;
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_RENAME_ENABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.MetastoreClientUtils.deepCopyMap;
@@ -127,6 +130,8 @@ public class GlueMetastoreClientDelegate {
   public static final Long NO_MAX = -1L;
   public static final String MATCH_ALL = ".*";
   private static final int BATCH_CREATE_PARTITIONS_MAX_REQUEST_SIZE = 100;
+  // Glue column parameter Iceberg's GlueCatalog sets to "false" on columns of fields dropped from the current schema
+  static final String ICEBERG_FIELD_CURRENT = "iceberg.field.current";
 
   private static final int NUM_EXECUTOR_THREADS = 5;
   static final String GLUE_METASTORE_DELEGATE_THREADPOOL_NAME_FORMAT = "glue-metastore-delegate-%d";
@@ -139,6 +144,7 @@ public class GlueMetastoreClientDelegate {
 
   private final AWSGlueMetastore glueMetastore;
   private final Configuration conf;
+  private final boolean hideOldIcebergColumnsEnabled;
   private final Warehouse wh;
   private final AwsGlueHiveShims hiveShims = ShimsLoader.getHiveShims();
   private final CatalogToHiveConverter catalogToHiveConverter;
@@ -155,6 +161,7 @@ public class GlueMetastoreClientDelegate {
 
     catalogToHiveConverter = CatalogToHiveConverterFactory.getCatalogToHiveConverter();
     this.conf = conf;
+    this.hideOldIcebergColumnsEnabled = conf.getBoolean(AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS, false);
     this.glueMetastore = glueMetastore;
     this.wh = wh;
     // TODO - May be validate catalogId confirms to AWS AccountId too.
@@ -385,7 +392,11 @@ public class GlueMetastoreClientDelegate {
     try {
       Table table = glueMetastore.getTable(dbName, tableName);
       validateGlueTable(table);
-      return catalogToHiveConverter.convertTable(table, dbName);
+      org.apache.hadoop.hive.metastore.api.Table hiveTable = catalogToHiveConverter.convertTable(table, dbName);
+      if (hideOldIcebergColumnsEnabled && isIcebergTable(table)) {
+        hideOldIcebergColumns(table, hiveTable);
+      }
+      return hiveTable;
     } catch (AmazonServiceException e) {
       if (isLakeFormationAccessDenied(e)) {
         logger.warn("LakeFormation AccessDeniedException on getTable('" + dbName + "." + tableName
@@ -636,6 +647,41 @@ public class GlueMetastoreClientDelegate {
     String tableType = glueTable.getParameters().get("table_type");
     // Iceberg tables have table_type = ICEBERG
     return tableType != null && "ICEBERG".equalsIgnoreCase(tableType);
+  }
+
+  /**
+   * Removes from {@code hiveTable}'s columns those whose Glue column has iceberg.field.current=false, as written by
+   * Iceberg's GlueCatalog for fields dropped from the current schema. See AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS.
+   * The Hive columns are matched to the Glue columns by position, since the converter keeps their order. Leaves the
+   * columns unchanged if either side is missing, the two lists differ in size, or every column is old.
+   */
+  @VisibleForTesting
+  static void hideOldIcebergColumns(Table glueTable, org.apache.hadoop.hive.metastore.api.Table hiveTable) {
+    if (glueTable.getStorageDescriptor() == null || hiveTable.getSd() == null) {
+      return;
+    }
+    List<Column> glueColumns = glueTable.getStorageDescriptor().getColumns();
+    List<FieldSchema> hiveColumns = hiveTable.getSd().getCols();
+    if (glueColumns == null || hiveColumns == null || glueColumns.size() != hiveColumns.size()) {
+      return;
+    }
+    List<FieldSchema> currentColumns = IntStream.range(0, glueColumns.size())
+        .filter(i -> isCurrentIcebergColumn(glueColumns.get(i)))
+        .mapToObj(hiveColumns::get)
+        .collect(Collectors.toList());
+    if (currentColumns.isEmpty() || currentColumns.size() == hiveColumns.size()) {
+      return;
+    }
+    if (logger.isDebugEnabled()) {
+      logger.debug("Hiding " + (hiveColumns.size() - currentColumns.size()) + " old Iceberg column(s) of "
+          + hiveTable.getDbName() + "." + hiveTable.getTableName());
+    }
+    hiveTable.getSd().setCols(currentColumns);
+  }
+
+  private static boolean isCurrentIcebergColumn(Column glueColumn) {
+    Map<String, String> parameters = glueColumn.getParameters();
+    return parameters == null || !"false".equals(parameters.get(ICEBERG_FIELD_CURRENT));
   }
 
   /**

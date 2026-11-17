@@ -57,6 +57,17 @@ public final class AWSGlueConfig {
      */
     public static final String AWS_GLUE_ICEBERG_RENAME_ENABLE = "aws.glue.iceberg.rename.enable";
 
+    /**
+     * When true, getTable leaves out the columns of an Iceberg table whose iceberg.field.current parameter is
+     * "false". Iceberg's GlueCatalog writes the columns of every schema in the table's history and marks the
+     * dropped ones this way, but Hive's FieldSchema has no parameters, so without this a Hive client sees dropped
+     * columns as live ones, and can see two columns with the same name. Hive's metastore only ever held the
+     * current schema's columns. Columns without the parameter, and non-Iceberg tables, are unchanged.
+     * Default: false.
+     */
+    public static final String AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS =
+            "aws.glue.iceberg.hide-non-current-columns.enable";
+
 
     public static final String AWS_GLUE_DB_CACHE_ENABLE = "aws.glue.cache.db.enable";
     public static final String AWS_GLUE_DB_CACHE_SIZE = "aws.glue.cache.db.size";

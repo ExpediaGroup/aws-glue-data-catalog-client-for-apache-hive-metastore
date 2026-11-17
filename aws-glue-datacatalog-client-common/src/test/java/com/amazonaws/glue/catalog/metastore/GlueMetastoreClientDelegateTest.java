@@ -1,11 +1,8 @@
 package com.amazonaws.glue.catalog.metastore;
 
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.glue.catalog.converters.BaseCatalogToHiveConverter;
 import com.amazonaws.glue.catalog.converters.CatalogToHiveConverter;
 import com.amazonaws.glue.catalog.converters.CatalogToHiveConverterFactory;
 import com.amazonaws.glue.catalog.converters.GlueInputConverter;
-import com.amazonaws.glue.catalog.converters.HiveToCatalogConverter;
 import com.amazonaws.glue.catalog.util.TestObjects;
 import com.amazonaws.services.glue.AWSGlue;
 import com.amazonaws.services.glue.model.AccessDeniedException;
@@ -15,6 +12,7 @@ import com.amazonaws.services.glue.model.BatchCreatePartitionResult;
 import com.amazonaws.services.glue.model.ConcurrentModificationException;
 import com.amazonaws.services.glue.model.BatchGetPartitionRequest;
 import com.amazonaws.services.glue.model.BatchGetPartitionResult;
+import com.amazonaws.services.glue.model.Column;
 import com.amazonaws.services.glue.model.CreateDatabaseRequest;
 import com.amazonaws.services.glue.model.CreateTableRequest;
 import com.amazonaws.services.glue.model.CreateUserDefinedFunctionRequest;
@@ -51,10 +49,7 @@ import com.amazonaws.services.glue.model.OperationTimeoutException;
 import com.amazonaws.services.glue.model.Partition;
 import com.amazonaws.services.glue.model.PartitionInput;
 import com.amazonaws.services.glue.model.Table;
-import com.amazonaws.services.glue.model.TableInput;
-import com.amazonaws.services.glue.model.UpdateColumnStatisticsForPartitionRequest;
 import com.amazonaws.services.glue.model.UpdateColumnStatisticsForPartitionResult;
-import com.amazonaws.services.glue.model.UpdateColumnStatisticsForTableRequest;
 import com.amazonaws.services.glue.model.UpdateColumnStatisticsForTableResult;
 import com.amazonaws.services.glue.model.UpdateDatabaseRequest;
 import com.amazonaws.services.glue.model.UpdatePartitionRequest;
@@ -68,7 +63,6 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.Warehouse;
@@ -86,8 +80,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Mock;
-import org.mockito.internal.util.reflection.Whitebox;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -95,10 +87,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_ICEBERG_RENAME_ENABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_LAKEFORMATION_ACCESS_DENIED_AS_NOT_FOUND;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestDatabase;
@@ -119,6 +114,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -126,7 +122,6 @@ import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
@@ -401,6 +396,176 @@ public class GlueMetastoreClientDelegateTest {
 
     assertNotNull(hiveTable.getSd());
     assertNotNull(hiveTable.getSd().getSerdeInfo());
+  }
+
+  @Test
+  public void testGetTableIcebergHidesOldColumnsWhenEnabled() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    Table tbl = tableWithColumns("ICEBERG",
+        glueColumn("sourceurl", "string", "true"),
+        glueColumn("sourceurl", "int", "false"),
+        glueColumn("acq_date", "string", null));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
+
+    List<FieldSchema> cols = metastoreClientDelegate.getTable(testDb.getName(), tbl.getName()).getSd().getCols();
+
+    assertEquals(Arrays.asList(new FieldSchema("sourceurl", "string", null), new FieldSchema("acq_date", "string", null)),
+        cols);
+    assertEquals("Glue table must not be modified", 3, tbl.getStorageDescriptor().getColumns().size());
+  }
+
+  @Test
+  public void testGetTableIcebergKeepsOldColumnsWhenDisabled() throws Exception {
+    Table tbl = tableWithColumns("ICEBERG",
+        glueColumn("sourceurl", "string", "true"),
+        glueColumn("sourceurl", "int", "false"));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
+
+    assertEquals(2, metastoreClientDelegate.getTable(testDb.getName(), tbl.getName()).getSd().getCols().size());
+  }
+
+  @Test
+  public void testGetTableNonIcebergKeepsOldColumnsWhenEnabled() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    Table tbl = tableWithColumns(null,
+        glueColumn("a", "string", "true"),
+        glueColumn("b", "string", "false"));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
+
+    assertEquals(2, metastoreClientDelegate.getTable(testDb.getName(), tbl.getName()).getSd().getCols().size());
+  }
+
+  @Test
+  public void testGetTableIcebergKeepsColumnsWhenNoneAreCurrent() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    Table tbl = tableWithColumns("ICEBERG",
+        glueColumn("a", "string", "false"),
+        glueColumn("b", "string", "false"));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
+
+    assertEquals(2, metastoreClientDelegate.getTable(testDb.getName(), tbl.getName()).getSd().getCols().size());
+  }
+
+  @Test
+  public void testGetTableIcebergHidesOnlyColumnsWithCurrentFalse() throws Exception {
+    conf.setBoolean(AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS, true);
+    metastoreClientDelegate = new GlueMetastoreClientDelegate(conf, new DefaultAWSGlueMetastore(conf, glueClient), wh);
+    Table tbl = tableWithColumns("ICEBERG",
+        glueColumnWithParameters("no_current_key", "string", Collections.singletonMap("iceberg.field.id", "5")),
+        glueColumnWithParameters("empty_parameters", "string", new HashMap<String, String>()),
+        glueColumn("upper_case_false", "string", "FALSE"),
+        glueColumn("unexpected_value", "string", "unknown"),
+        glueColumn("empty_value", "string", ""),
+        glueColumn("old", "string", "false"));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(tbl));
+
+    List<FieldSchema> cols = metastoreClientDelegate.getTable(testDb.getName(), tbl.getName()).getSd().getCols();
+
+    assertEquals(Arrays.asList("no_current_key", "empty_parameters", "upper_case_false", "unexpected_value", "empty_value"),
+        cols.stream().map(FieldSchema::getName).collect(Collectors.toList()));
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsKeepsOrderAndColumnObjects() {
+    Table glueTable = tableWithColumns("ICEBERG",
+        glueColumn("a", "string", "true"),
+        glueColumn("b", "string", "false"),
+        glueColumn("c", "string", null),
+        glueColumn("d", "string", "false"),
+        glueColumn("e", "string", "true"));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    List<FieldSchema> original = new ArrayList<>(hiveTable.getSd().getCols());
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    List<FieldSchema> cols = hiveTable.getSd().getCols();
+    assertEquals(3, cols.size());
+    assertSame(original.get(0), cols.get(0));
+    assertSame(original.get(2), cols.get(1));
+    assertSame(original.get(4), cols.get(2));
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsLeavesListWhenNoneAreOld() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", null));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    List<FieldSchema> original = hiveTable.getSd().getCols();
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertSame(original, hiveTable.getSd().getCols());
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsLeavesPartitionKeys() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", "false"));
+    glueTable.setPartitionKeys(Arrays.asList(glueColumn("p", "string", "false")));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertEquals(1, hiveTable.getSd().getCols().size());
+    assertEquals(Arrays.asList(new FieldSchema("p", "string", null)), hiveTable.getPartitionKeys());
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsIgnoresColumnCountMismatch() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", "false"));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    hiveTable.getSd().getCols().remove(0);
+    List<FieldSchema> original = hiveTable.getSd().getCols();
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertSame(original, hiveTable.getSd().getCols());
+    assertEquals(1, original.size());
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsIgnoresMissingGlueStorageDescriptor() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", "false"));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    glueTable.setStorageDescriptor(null);
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertEquals(2, hiveTable.getSd().getCols().size());
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsIgnoresMissingHiveStorageDescriptor() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", "false"));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    hiveTable.setSd(null);
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertNull(hiveTable.getSd());
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsIgnoresMissingGlueColumns() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", "false"));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    glueTable.getStorageDescriptor().setColumns(null);
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertEquals(2, hiveTable.getSd().getCols().size());
+  }
+
+  @Test
+  public void testHideOldIcebergColumnsIgnoresMissingHiveColumns() {
+    Table glueTable = tableWithColumns("ICEBERG", glueColumn("a", "string", "true"), glueColumn("b", "string", "false"));
+    org.apache.hadoop.hive.metastore.api.Table hiveTable = hiveTableFor(glueTable);
+    hiveTable.getSd().setCols(null);
+
+    GlueMetastoreClientDelegate.hideOldIcebergColumns(glueTable, hiveTable);
+
+    assertNull(hiveTable.getSd().getCols());
   }
 
   @Test(expected = NoSuchObjectException.class)
@@ -2104,5 +2269,29 @@ public class GlueMetastoreClientDelegateTest {
       // tableExists + the versioned read only: no extra Glue read after the conflict
       verify(glueClient, times(2)).getTable(any(GetTableRequest.class));
     }
+  }
+
+  private org.apache.hadoop.hive.metastore.api.Table hiveTableFor(Table glueTable) {
+    return catalogToHiveConverter.convertTable(glueTable, testDb.getName());
+  }
+
+  private static Table tableWithColumns(String tableType, Column... columns) {
+    Table tbl = getTestTable();
+    if (tableType != null) {
+      tbl.getParameters().put("table_type", tableType);
+    }
+    tbl.getStorageDescriptor().setColumns(new ArrayList<>(Arrays.asList(columns)));
+    return tbl;
+  }
+
+  private static Column glueColumn(String name, String type, String current) {
+    return glueColumnWithParameters(name, type, current == null
+        ? null
+        : Collections.singletonMap(GlueMetastoreClientDelegate.ICEBERG_FIELD_CURRENT, current));
+  }
+
+  private static Column glueColumnWithParameters(String name, String type,
+      Map<String, String> parameters) {
+    return new Column().withName(name).withType(type).withParameters(parameters);
   }
 }
