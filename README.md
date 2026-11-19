@@ -112,6 +112,30 @@ To enable/tune Database cache:
 
 NOTE: The caching logic is disabled by default.
 
+## Sending drop events to metastore listeners (Expedia fork)
+
+A Hive metastore calls the listeners in `hive.metastore.event.listeners` while it still holds a dropped table, so
+their events carry the table's location and parameters. Glue keeps no copy of a dropped table, and its own events
+carry names only. This client can call Hive `MetaStoreEventListener`s itself after it drops a table or partition,
+using the table and partitions it read before the delete. Tools that clean up dropped data, such as Beekeeper
+through Apiary's `ApiarySnsListener`, then get the same events as from a Hive metastore.
+
+	<property>
+		<name>aws.glue.event.listeners</name>
+		<value>com.expediagroup.apiary.extensions.events.metastore.listener.ApiarySnsListener</value>
+	</property>
+
+- Only `onDropTable` and `onDropPartition` are called, after Glue confirms the delete.
+- Listeners run on one background daemon thread with a queue of 10,000 drops, so they never slow down or fail a
+  drop. When the queue is full, the drop's events are skipped and logged.
+- Dropping a table sends one drop table event; its partitions are deleted without events of their own.
+- A partition event also carries its table, read on the background thread and cached for 60 seconds.
+- Each listener needs a public constructor taking a Hadoop `Configuration`, and is loaded through the thread context
+  classloader. If a listener can't be loaded, the error is logged and no events are sent; the client still works.
+- Hive 3 client only.
+
+The setting is empty by default, which sends no events.
+
 ## License
 
 This library is licensed under the Apache 2.0 License.

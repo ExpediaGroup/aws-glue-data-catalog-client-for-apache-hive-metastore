@@ -149,6 +149,7 @@ public class GlueMetastoreClientDelegate {
   private final AwsGlueHiveShims hiveShims = ShimsLoader.getHiveShims();
   private final CatalogToHiveConverter catalogToHiveConverter;
   private final String catalogId;
+  private final DropEventNotifier dropEventNotifier;
 
   public static final String CATALOG_ID_CONF = "hive.metastore.glue.catalogid";
   public static final String NUM_PARTITION_SEGMENTS_CONF = "aws.glue.partition.num.segments";
@@ -166,6 +167,7 @@ public class GlueMetastoreClientDelegate {
     this.wh = wh;
     // TODO - May be validate catalogId confirms to AWS AccountId too.
     catalogId = MetastoreClientUtils.getCatalogId(conf);
+    this.dropEventNotifier = DropEventNotifier.create(conf);
   }
 
   // LakeFormation intentionally returns AccessDeniedException instead of
@@ -806,6 +808,7 @@ public class GlueMetastoreClientDelegate {
       logger.error(msg, e);
       throw new MetaException(msg + e);
     }
+    dropEventNotifier.tableDropped(tbl, deleteData);
 
     if (StringUtils.isNotEmpty(tblLocation) && deleteData && !isExternal) {
       Path tblPath = new Path(tblLocation);
@@ -820,7 +823,8 @@ public class GlueMetastoreClientDelegate {
   private void dropPartitionsForTable(String dbName, String tableName, boolean deleteData) throws TException {
     List<org.apache.hadoop.hive.metastore.api.Partition> partitionsToDelete = getPartitions(dbName, tableName, null, NO_MAX);
     for (org.apache.hadoop.hive.metastore.api.Partition part : partitionsToDelete) {
-      dropPartition(dbName, tableName, part.getValues(), true, deleteData, false);
+      // No partition events: listeners get one drop table event, as from a Hive metastore.
+      dropPartition(dbName, tableName, part.getValues(), true, deleteData, false, false);
     }
   }
 
@@ -1200,6 +1204,29 @@ public class GlueMetastoreClientDelegate {
           boolean deleteData,
           boolean purgeData
   ) throws TException {
+    return dropPartition(dbName, tblName, values, ifExist, deleteData, purgeData, true);
+  }
+
+  /**
+   * Sends the partitions that a batch delete removed, as read before the delete, to the listeners in
+   * {@code aws.glue.event.listeners}. For clients that delete partitions without going through
+   * {@link #dropPartition}.
+   */
+  public void notifyPartitionsDropped(String dbName, String tblName,
+                                      List<org.apache.hadoop.hive.metastore.api.Partition> partitions,
+                                      boolean deleteData) {
+    dropEventNotifier.partitionsDropped(dbName, tblName, partitions, deleteData, this::getTable);
+  }
+
+  private boolean dropPartition(
+          String dbName,
+          String tblName,
+          List<String>values,
+          boolean ifExist,
+          boolean deleteData,
+          boolean purgeData,
+          boolean notifyListeners
+  ) throws TException {
     checkArgument(StringUtils.isNotEmpty(dbName), "dbName cannot be null or empty");
     checkArgument(StringUtils.isNotEmpty(tblName), "tblName cannot be null or empty");
     checkNotNull(values, "values cannot be null");
@@ -1221,6 +1248,9 @@ public class GlueMetastoreClientDelegate {
       String msg = "Unable to drop partition with values: " + StringUtils.join(values, "/");
       logger.error(msg, e);
       throw new MetaException(msg + e);
+    }
+    if (notifyListeners) {
+      notifyPartitionsDropped(dbName, tblName, Collections.singletonList(partition), deleteData);
     }
 
     performDropPartitionPostProcessing(dbName, tblName, partition, deleteData, purgeData);
