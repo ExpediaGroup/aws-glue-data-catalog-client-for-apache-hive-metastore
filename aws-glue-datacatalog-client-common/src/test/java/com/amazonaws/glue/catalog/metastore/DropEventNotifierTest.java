@@ -26,6 +26,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS;
@@ -93,6 +94,20 @@ public class DropEventNotifierTest {
     ListenerEvent event = RecordingListener.EVENTS.poll(10, TimeUnit.SECONDS);
     assertNotNull("no event delivered on the background thread", event);
     assertSame(table, ((DropTableEvent) event).getTable());
+  }
+
+  @Test
+  public void listenersAreCreatedOnceAndSharedByClients() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set(AWS_GLUE_EVENT_LISTENERS, RecordingListener.class.getName());
+
+    DropEventNotifier first = DropEventNotifier.create(conf);
+    int createdAfterFirst = RecordingListener.CREATED.get();
+    DropEventNotifier second = DropEventNotifier.create(new Configuration(conf));
+
+    assertTrue(createdAfterFirst >= 1);
+    assertEquals("a second client must not create new listeners", createdAfterFirst, RecordingListener.CREATED.get());
+    assertTrue(first.isEnabled() && second.isEnabled());
   }
 
   @Test
@@ -222,9 +237,11 @@ public class DropEventNotifierTest {
   /** Loaded by class name through aws.glue.event.listeners. */
   public static class RecordingListener extends MetaStoreEventListener {
     static final BlockingQueue<ListenerEvent> EVENTS = new LinkedBlockingQueue<>();
+    static final AtomicInteger CREATED = new AtomicInteger();
 
     public RecordingListener(Configuration config) {
       super(config);
+      CREATED.incrementAndGet();
     }
 
     @Override

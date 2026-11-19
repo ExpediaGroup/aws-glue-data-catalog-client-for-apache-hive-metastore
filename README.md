@@ -132,6 +132,9 @@ through Apiary's `ApiarySnsListener`, then get the same events as from a Hive me
 - A partition event also carries its table, read on the background thread and cached for 60 seconds.
 - Each listener needs a public constructor taking a Hadoop `Configuration`, and is loaded through the thread context
   classloader. If a listener can't be loaded, the error is logged and no events are sent; the client still works.
+- Listeners are created once per JVM for each value of the setting, with the configuration of the first client that
+  names them, and shared by every client after that. Hosts such as Waggle Dance create a client for every metastore
+  status check, and a listener like `ApiarySnsListener` holds an SNS client that is never closed.
 - Hive 3 client only.
 
 The setting is empty by default, which sends no events.

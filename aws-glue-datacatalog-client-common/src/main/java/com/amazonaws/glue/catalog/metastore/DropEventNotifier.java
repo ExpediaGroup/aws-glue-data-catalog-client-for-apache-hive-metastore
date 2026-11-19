@@ -21,6 +21,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -60,6 +62,13 @@ public class DropEventNotifier {
   private static final DropEventNotifier DISABLED =
       new DropEventNotifier(Collections.<MetaStoreEventListener>emptyList(), null, Ticker.systemTicker());
 
+  /**
+   * Listeners by the {@code aws.glue.event.listeners} value that created them, shared by every client in the JVM.
+   * Hosts can create clients often: Waggle Dance builds a new one for every metastore status check, every few
+   * minutes. Listeners such as ApiarySnsListener hold an SNS client that is never closed, so they are created once.
+   */
+  private static final ConcurrentMap<String, List<MetaStoreEventListener>> LISTENERS = new ConcurrentHashMap<>();
+
   private final List<MetaStoreEventListener> listeners;
   private final Executor executor;
   private final Cache<String, Table> tableCache;
@@ -69,23 +78,34 @@ public class DropEventNotifier {
   private final AtomicLong rejected = new AtomicLong();
 
   /**
-   * Loads the listeners named in {@code aws.glue.event.listeners}. A listener that can't be loaded is logged and
-   * turns the notifier off, rather than failing the client.
+   * Returns a notifier for the listeners named in {@code aws.glue.event.listeners}. Listeners are created once per
+   * JVM for each value, with the configuration of the first client that names them, and shared after that. A
+   * listener that can't be loaded is logged and turns the notifier off, rather than failing the client; the next
+   * client tries again.
    */
   public static DropEventNotifier create(Configuration conf) {
     String listenerNames = conf.getTrimmed(AWS_GLUE_EVENT_LISTENERS, "");
     if (listenerNames.isEmpty()) {
       return DISABLED;
     }
-    List<MetaStoreEventListener> listeners;
-    try {
-      listeners = MetaStoreUtils.getMetaStoreListeners(MetaStoreEventListener.class, conf, listenerNames);
-    } catch (MetaException | RuntimeException | LinkageError e) {
-      logger.error("Unable to load " + AWS_GLUE_EVENT_LISTENERS + "=" + listenerNames
-          + "; drop events will not be sent", e);
-      return DISABLED;
+    List<MetaStoreEventListener> listeners = LISTENERS.get(listenerNames);
+    if (listeners == null) {
+      synchronized (LISTENERS) {
+        listeners = LISTENERS.get(listenerNames);
+        if (listeners == null) {
+          try {
+            listeners = ImmutableList.copyOf(
+                MetaStoreUtils.getMetaStoreListeners(MetaStoreEventListener.class, conf, listenerNames));
+          } catch (MetaException | RuntimeException | LinkageError e) {
+            logger.error("Unable to load " + AWS_GLUE_EVENT_LISTENERS + "=" + listenerNames
+                + "; drop events will not be sent", e);
+            return DISABLED;
+          }
+          LISTENERS.put(listenerNames, listeners);
+          logger.info("Sending drop table and drop partition events to " + listenerNames);
+        }
+      }
     }
-    logger.info("Sending drop table and drop partition events to " + listenerNames);
     return new DropEventNotifier(listeners, SharedExecutor.INSTANCE, Ticker.systemTicker());
   }
 
