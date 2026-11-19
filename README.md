@@ -112,6 +112,41 @@ To enable/tune Database cache:
 
 NOTE: The caching logic is disabled by default.
 
+## Sending drop events to metastore listeners (Expedia fork)
+
+A Hive metastore calls the listeners in `hive.metastore.event.listeners` while it still holds a dropped table, so
+their events carry the table's location and parameters. Glue keeps no copy of a dropped table, and its own events
+carry names only. This client can call Hive `MetaStoreEventListener`s itself after it drops a table or partition,
+using the table and partitions it read before the delete. Tools that clean up dropped data, such as Beekeeper
+through Apiary's `ApiarySnsListener`, then get the same events as from a Hive metastore.
+
+	<property>
+		<name>aws.glue.event.listeners</name>
+		<value>com.expediagroup.apiary.extensions.events.metastore.listener.ApiarySnsListener</value>
+	</property>
+
+- Only `onDropTable` and `onDropPartition` are called, after Glue confirms the delete.
+- Listeners run on one background daemon thread with a queue of 10,000 drops, so they never slow down or fail a
+  drop. When the queue is full, the drop's events are skipped and logged. On JVM shutdown, queued events are sent
+  first, waiting up to 10 seconds; any still queued after that are logged.
+- Dropping a table sends one drop table event; its partitions are deleted without events of their own.
+- A partition event also carries its table, read on the background thread and cached for 60 seconds.
+- Each listener needs a public constructor taking a Hadoop `Configuration`, and is loaded through the thread context
+  classloader. If a listener can't be loaded, the error is logged and no events are sent; the client still works.
+- Listeners are created once per JVM for each value of the setting, with the configuration of the first client that
+  names them, and shared by every client after that. Hosts such as Waggle Dance create a client for every metastore
+  status check, and a listener like `ApiarySnsListener` holds an SNS client that is never closed.
+- Hive 3 client only.
+
+The setting is empty by default, which sends no events.
+
+`ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
+(the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).
+For Beekeeper, set `TABLE_PARAM_FILTER=beekeeper.*|table_type|metadata_location`. The filter must match the whole
+parameter name. Beekeeper needs the `beekeeper.*` parameters to act on an event at all, and `table_type` and
+`metadata_location` to recognise and skip Iceberg tables. Without the filter, the messages carry no table parameters
+and Beekeeper ignores them.
+
 ## License
 
 This library is licensed under the Apache 2.0 License.
