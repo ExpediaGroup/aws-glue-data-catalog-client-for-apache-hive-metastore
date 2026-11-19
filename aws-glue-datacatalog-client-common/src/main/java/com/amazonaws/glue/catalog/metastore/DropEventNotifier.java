@@ -124,11 +124,23 @@ public class DropEventNotifier {
     return !listeners.isEmpty();
   }
 
-  /** Call after Glue confirmed the table was deleted, with the table as read before the delete. */
+  /**
+   * Call after Glue confirmed the table was deleted, with the table as read before the delete. Never throws: this
+   * runs on the drop path.
+   */
   public void tableDropped(final Table table, final boolean deleteData) {
     if (!isEnabled() || table == null) {
       return;
     }
+    try {
+      queueTableDropped(table, deleteData);
+    } catch (RuntimeException e) {
+      failed.addAndGet(listeners.size());
+      logger.warn("Unable to queue drop table event for " + table.getDbName() + "." + table.getTableName(), e);
+    }
+  }
+
+  private void queueTableDropped(final Table table, final boolean deleteData) {
     tableCache.invalidate(key(table.getDbName(), table.getTableName()));
     submit("drop table " + table.getDbName() + "." + table.getTableName(), new Runnable() {
       @Override
@@ -157,13 +169,24 @@ public class DropEventNotifier {
 
   /**
    * Call after Glue confirmed the partitions were deleted, with the partitions as read before the delete. The
-   * table is read on the background thread, through {@code tableLoader}, and cached for a short time.
+   * table is read on the background thread, through {@code tableLoader}, and cached for a short time. Never
+   * throws: this runs on the drop path.
    */
-  public void partitionsDropped(final String dbName, final String tableName, List<Partition> partitions,
-                                final boolean deleteData, final TableLoader tableLoader) {
+  public void partitionsDropped(String dbName, String tableName, List<Partition> partitions,
+                                boolean deleteData, TableLoader tableLoader) {
     if (!isEnabled() || partitions == null || partitions.isEmpty()) {
       return;
     }
+    try {
+      queuePartitionsDropped(dbName, tableName, partitions, deleteData, tableLoader);
+    } catch (RuntimeException e) {
+      failed.addAndGet((long) partitions.size() * listeners.size());
+      logger.warn("Unable to queue drop partition events for " + dbName + "." + tableName, e);
+    }
+  }
+
+  private void queuePartitionsDropped(final String dbName, final String tableName, List<Partition> partitions,
+                                      final boolean deleteData, final TableLoader tableLoader) {
     final List<Partition> dropped = ImmutableList.copyOf(partitions);
     final String name = dbName + "." + tableName;
     submit("drop " + dropped.size() + " partition(s) of " + name, new Runnable() {

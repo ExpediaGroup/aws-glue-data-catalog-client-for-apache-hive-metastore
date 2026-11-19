@@ -206,6 +206,26 @@ public class DropEventNotifierTest {
   }
 
   @Test
+  public void neverThrowsOnTheDropPath() throws Exception {
+    Executor broken = new Executor() {
+      @Override
+      public void execute(Runnable command) {
+        throw new IllegalStateException("executor broken");
+      }
+    };
+    DropEventNotifier failing = new DropEventNotifier(ImmutableList.of(listener), broken, ticker);
+
+    failing.tableDropped(table, false);
+    failing.partitionsDropped("db", "tbl", Collections.singletonList(partition("a")), false, tableLoader);
+    notifier.partitionsDropped("db", "tbl", Arrays.asList(partition("a"), null), false, tableLoader);
+
+    verify(listener, never()).onDropTable(any(DropTableEvent.class));
+    verify(listener, never()).onDropPartition(any(DropPartitionEvent.class));
+    assertEquals(2, failing.getFailedCount());
+    assertEquals(2, notifier.getFailedCount());
+  }
+
+  @Test
   public void emptyPartitionListSendsNothing() throws Exception {
     notifier.partitionsDropped("db", "tbl", Collections.<Partition>emptyList(), false, tableLoader);
     notifier.partitionsDropped("db", "tbl", null, false, tableLoader);
