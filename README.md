@@ -127,7 +127,8 @@ through Apiary's `ApiarySnsListener`, then get the same events as from a Hive me
 
 - Only `onDropTable` and `onDropPartition` are called, after Glue confirms the delete.
 - Listeners run on one background daemon thread with a queue of 10,000 drops, so they never slow down or fail a
-  drop. When the queue is full, the drop's events are skipped and logged.
+  drop. When the queue is full, the drop's events are skipped and logged. On JVM shutdown, queued events are sent
+  first, waiting up to 10 seconds; any still queued after that are logged.
 - Dropping a table sends one drop table event; its partitions are deleted without events of their own.
 - A partition event also carries its table, read on the background thread and cached for 60 seconds.
 - Each listener needs a public constructor taking a Hadoop `Configuration`, and is loaded through the thread context
@@ -141,8 +142,10 @@ The setting is empty by default, which sends no events.
 
 `ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
 (the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).
-Beekeeper needs `TABLE_PARAM_FILTER` to match `beekeeper.*`; without it the messages carry no table parameters and
-Beekeeper ignores them.
+For Beekeeper, set `TABLE_PARAM_FILTER=beekeeper.*|table_type|metadata_location`. The filter must match the whole
+parameter name. Beekeeper needs the `beekeeper.*` parameters to act on an event at all, and `table_type` and
+`metadata_location` to recognise and skip Iceberg tables. Without the filter, the messages carry no table parameters
+and Beekeeper ignores them.
 
 ## License
 
