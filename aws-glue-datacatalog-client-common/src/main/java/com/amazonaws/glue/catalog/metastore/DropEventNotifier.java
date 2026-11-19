@@ -53,9 +53,11 @@ public class DropEventNotifier {
   static final int QUEUE_SIZE = 10000;
   static final long TABLE_CACHE_TTL_SECONDS = 60;
   static final int TABLE_CACHE_MAX_SIZE = 1000;
+  /** How long a JVM shutdown waits for queued events to be sent. */
+  static final long SHUTDOWN_TIMEOUT_SECONDS = 10;
 
   /** Reads the table that a dropped partition belongs to. */
-  interface TableLoader {
+  public interface TableLoader {
     Table getTable(String dbName, String tableName) throws TException;
   }
 
@@ -240,8 +242,29 @@ public class DropEventNotifier {
       executor.execute(task);
     } catch (RejectedExecutionException e) {
       long count = rejected.incrementAndGet();
-      logger.warn("Drop event queue is full; skipped " + description + " (" + count + " skipped so far)");
+      logger.warn("Drop event queue is full or shutting down; skipped " + description
+          + " (" + count + " skipped so far)");
     }
+  }
+
+  /**
+   * Stops taking new events and waits up to {@code timeout} for the queued ones to be sent. Returns how many were
+   * still queued when it gave up.
+   */
+  @VisibleForTesting
+  static int drain(ThreadPoolExecutor executor, long timeout, TimeUnit unit) {
+    executor.shutdown();
+    try {
+      if (executor.awaitTermination(timeout, unit)) {
+        return 0;
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    int left = executor.getQueue().size();
+    logger.warn("Shutting down with " + left + " drop event(s) not sent after waiting " + timeout + " "
+        + unit.toString().toLowerCase(Locale.ROOT));
+    return left;
   }
 
   private static String key(String dbName, String tableName) {
@@ -263,7 +286,11 @@ public class DropEventNotifier {
     return rejected.get();
   }
 
-  /** One daemon thread for every client in the JVM, created only when listeners are configured. */
+  /**
+   * One daemon thread for every client in the JVM, created only when listeners are configured. On JVM shutdown, a
+   * hook sends the queued events, waiting up to {@link #SHUTDOWN_TIMEOUT_SECONDS}, so a normal stop or redeploy
+   * doesn't lose them.
+   */
   private static final class SharedExecutor {
     static final ThreadPoolExecutor INSTANCE;
 
@@ -273,6 +300,12 @@ public class DropEventNotifier {
           new ThreadFactoryBuilder().setNameFormat(THREAD_NAME_FORMAT).setDaemon(true).build(),
           new ThreadPoolExecutor.AbortPolicy());
       INSTANCE.allowCoreThreadTimeOut(true);
+      Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+        @Override
+        public void run() {
+          drain(INSTANCE, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }
+      }, "glue-drop-event-listener-shutdown"));
     }
   }
 }

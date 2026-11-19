@@ -21,10 +21,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -223,6 +226,67 @@ public class DropEventNotifierTest {
     verify(listener, never()).onDropPartition(any(DropPartitionEvent.class));
     assertEquals(2, failing.getFailedCount());
     assertEquals(2, notifier.getFailedCount());
+  }
+
+  @Test
+  public void drainSendsQueuedEventsBeforeShutdown() throws Exception {
+    ThreadPoolExecutor executor = singleThreadExecutor();
+    final AtomicInteger sent = new AtomicInteger();
+    for (int i = 0; i < 5; i++) {
+      executor.execute(new Runnable() {
+        @Override
+        public void run() {
+          sent.incrementAndGet();
+        }
+      });
+    }
+
+    int left = DropEventNotifier.drain(executor, 5, TimeUnit.SECONDS);
+
+    assertEquals(0, left);
+    assertEquals(5, sent.get());
+    assertTrue(executor.isTerminated());
+  }
+
+  @Test
+  public void drainReportsEventsLeftWhenTimeoutExpires() throws Exception {
+    ThreadPoolExecutor executor = singleThreadExecutor();
+    final CountDownLatch release = new CountDownLatch(1);
+    Runnable blocked = new Runnable() {
+      @Override
+      public void run() {
+        try {
+          release.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    };
+    executor.execute(blocked);
+    executor.execute(blocked);
+    executor.execute(blocked);
+
+    try {
+      assertEquals(2, DropEventNotifier.drain(executor, 100, TimeUnit.MILLISECONDS));
+    } finally {
+      release.countDown();
+    }
+  }
+
+  @Test
+  public void eventsAfterShutdownAreSkippedWithoutFailing() throws Exception {
+    ThreadPoolExecutor executor = singleThreadExecutor();
+    DropEventNotifier stopping = new DropEventNotifier(ImmutableList.of(listener), executor, ticker);
+    DropEventNotifier.drain(executor, 1, TimeUnit.SECONDS);
+
+    stopping.tableDropped(table, false);
+
+    verify(listener, never()).onDropTable(any(DropTableEvent.class));
+    assertEquals(1, stopping.getRejectedCount());
+  }
+
+  private static ThreadPoolExecutor singleThreadExecutor() {
+    return new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(10));
   }
 
   @Test
