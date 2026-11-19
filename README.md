@@ -139,6 +139,11 @@ through Apiary's `ApiarySnsListener`, then get the same events as from a Hive me
 
 The setting is empty by default, which sends no events.
 
+`ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
+(the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).
+Beekeeper needs `TABLE_PARAM_FILTER` to match `beekeeper.*`; without it the messages carry no table parameters and
+Beekeeper ignores them.
+
 ## License
 
 This library is licensed under the Apache 2.0 License.
