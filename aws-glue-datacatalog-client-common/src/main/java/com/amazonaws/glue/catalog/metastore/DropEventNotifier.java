@@ -26,6 +26,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.amazonaws.glue.catalog.metastore.DropEventMetrics.PARTITION;
+import static com.amazonaws.glue.catalog.metastore.DropEventMetrics.TABLE;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS_REQUIRED_TABLE_PARAMETER;
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS_SKIP_ICEBERG;
@@ -45,6 +47,8 @@ import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTE
  *
  * <p>Events can be limited to tables with a given parameter set to {@code true}, and Iceberg tables can be skipped;
  * see {@code aws.glue.event.listeners.required-table-parameter} and {@code aws.glue.event.listeners.skip-iceberg}.
+ * Counts and timings are also reported as Micrometer metrics when the host has Micrometer; see
+ * {@link MicrometerDropEventMetrics}.
  */
 public class DropEventNotifier {
 
@@ -60,8 +64,8 @@ public class DropEventNotifier {
   static final String TABLE_TYPE = "table_type";
   static final String ICEBERG = "iceberg";
 
-  private static final DropEventNotifier DISABLED =
-      new DropEventNotifier(Collections.<MetaStoreEventListener>emptyList(), null, null, false);
+  private static final DropEventNotifier DISABLED = new DropEventNotifier(
+      Collections.<MetaStoreEventListener>emptyList(), null, null, false, DropEventMetrics.NOOP);
 
   /**
    * Listeners by the {@code aws.glue.event.listeners} value that created them, shared by every client in the JVM.
@@ -74,6 +78,7 @@ public class DropEventNotifier {
   private final Executor executor;
   private final String requiredTableParameter;
   private final boolean skipIceberg;
+  private final DropEventMetrics metrics;
 
   private final AtomicLong delivered = new AtomicLong();
   private final AtomicLong failed = new AtomicLong();
@@ -112,16 +117,23 @@ public class DropEventNotifier {
     String requiredTableParameter = conf.getTrimmed(AWS_GLUE_EVENT_LISTENERS_REQUIRED_TABLE_PARAMETER, "");
     return new DropEventNotifier(listeners, SharedExecutor.INSTANCE,
         requiredTableParameter.isEmpty() ? null : requiredTableParameter,
-        conf.getBoolean(AWS_GLUE_EVENT_LISTENERS_SKIP_ICEBERG, false));
+        conf.getBoolean(AWS_GLUE_EVENT_LISTENERS_SKIP_ICEBERG, false), SharedExecutor.METRICS);
   }
 
   @VisibleForTesting
   DropEventNotifier(List<MetaStoreEventListener> listeners, Executor executor, String requiredTableParameter,
                     boolean skipIceberg) {
+    this(listeners, executor, requiredTableParameter, skipIceberg, DropEventMetrics.NOOP);
+  }
+
+  @VisibleForTesting
+  DropEventNotifier(List<MetaStoreEventListener> listeners, Executor executor, String requiredTableParameter,
+                    boolean skipIceberg, DropEventMetrics metrics) {
     this.listeners = ImmutableList.copyOf(listeners);
     this.executor = executor;
     this.requiredTableParameter = requiredTableParameter;
     this.skipIceberg = skipIceberg;
+    this.metrics = metrics;
   }
 
   public boolean isEnabled() {
@@ -137,34 +149,37 @@ public class DropEventNotifier {
       return;
     }
     try {
-      if (!wanted(table)) {
+      if (!wanted(table, TABLE, 1)) {
         return;
       }
       final String name = table.getDbName() + "." + table.getTableName();
-      submit("drop table " + name, new Runnable() {
+      submit(TABLE, 1, "drop table " + name, new Runnable() {
         @Override
         public void run() {
           DropTableEvent event;
           try {
             event = new DropTableEvent(table, true, deleteData, null);
           } catch (Throwable t) {
-            failed.addAndGet(listeners.size());
+            recordFailed(TABLE, listeners.size());
             logger.warn("Unable to build drop table event for " + name, t);
             return;
           }
           for (MetaStoreEventListener listener : listeners) {
+            long start = System.nanoTime();
             try {
               listener.onDropTable(event);
-              delivered.incrementAndGet();
+              recordDelivered(TABLE);
             } catch (Throwable t) {
-              failed.incrementAndGet();
+              recordFailed(TABLE, 1);
               logger.warn("Listener " + listener.getClass().getName() + " failed on drop table " + name, t);
+            } finally {
+              metrics.listenerCall(TABLE, System.nanoTime() - start);
             }
           }
         }
       });
     } catch (RuntimeException e) {
-      failed.addAndGet(listeners.size());
+      recordFailed(TABLE, listeners.size());
       logger.warn("Unable to queue drop table event for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
@@ -178,12 +193,12 @@ public class DropEventNotifier {
       return;
     }
     try {
-      if (!wanted(table)) {
+      if (!wanted(table, PARTITION, partitions.size())) {
         return;
       }
       final List<Partition> dropped = ImmutableList.copyOf(partitions);
       final String name = table.getDbName() + "." + table.getTableName();
-      submit("drop " + dropped.size() + " partition(s) of " + name, new Runnable() {
+      submit(PARTITION, dropped.size(), "drop " + dropped.size() + " partition(s) of " + name, new Runnable() {
         @Override
         public void run() {
           for (Partition partition : dropped) {
@@ -191,25 +206,28 @@ public class DropEventNotifier {
             try {
               event = new DropPartitionEvent(table, partition, true, deleteData, null);
             } catch (Throwable t) {
-              failed.addAndGet(listeners.size());
+              recordFailed(PARTITION, listeners.size());
               logger.warn("Unable to build drop partition event for " + partition.getValues() + " of " + name, t);
               continue;
             }
             for (MetaStoreEventListener listener : listeners) {
+              long start = System.nanoTime();
               try {
                 listener.onDropPartition(event);
-                delivered.incrementAndGet();
+                recordDelivered(PARTITION);
               } catch (Throwable t) {
-                failed.incrementAndGet();
+                recordFailed(PARTITION, 1);
                 logger.warn("Listener " + listener.getClass().getName() + " failed on drop partition "
                     + partition.getValues() + " of " + name, t);
+              } finally {
+                metrics.listenerCall(PARTITION, System.nanoTime() - start);
               }
             }
           }
         }
       });
     } catch (RuntimeException e) {
-      failed.addAndGet((long) partitions.size() * listeners.size());
+      recordFailed(PARTITION, (long) partitions.size() * listeners.size());
       logger.warn("Unable to queue drop partition events for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
@@ -222,23 +240,28 @@ public class DropEventNotifier {
     if (!isEnabled() || partitionCount <= 0) {
       return;
     }
-    failed.addAndGet((long) partitionCount * listeners.size());
+    recordFailed(PARTITION, (long) partitionCount * listeners.size());
     logger.warn("Unable to read table " + dbName + "." + tableName + " for " + partitionCount
         + " drop partition event(s); events not sent", cause);
   }
 
-  private boolean wanted(Table table) {
+  /** Records how long reading a dropped partition's table took on the drop call. Never throws. */
+  public void recordTableRead(long nanos, boolean succeeded) {
+    if (isEnabled()) {
+      metrics.tableRead(nanos, succeeded);
+    }
+  }
+
+  private boolean wanted(Table table, String type, int events) {
     Map<String, String> parameters = table.getParameters();
-    if (requiredTableParameter != null
-        && (parameters == null || !"true".equalsIgnoreCase(trim(parameters.get(requiredTableParameter))))) {
-      filtered.incrementAndGet();
-      return false;
+    boolean wanted = (requiredTableParameter == null
+        || (parameters != null && "true".equalsIgnoreCase(trim(parameters.get(requiredTableParameter)))))
+        && !(skipIceberg && isIceberg(parameters));
+    if (!wanted) {
+      filtered.addAndGet(events);
+      metrics.filtered(type, events);
     }
-    if (skipIceberg && isIceberg(parameters)) {
-      filtered.incrementAndGet();
-      return false;
-    }
-    return true;
+    return wanted;
   }
 
   @VisibleForTesting
@@ -256,11 +279,22 @@ public class DropEventNotifier {
     return value == null ? null : value.trim();
   }
 
-  private void submit(String description, Runnable task) {
+  private void recordDelivered(String type) {
+    delivered.incrementAndGet();
+    metrics.delivered(type, 1);
+  }
+
+  private void recordFailed(String type, long count) {
+    failed.addAndGet(count);
+    metrics.failed(type, count);
+  }
+
+  private void submit(String type, int events, String description, Runnable task) {
     try {
       executor.execute(task);
     } catch (RejectedExecutionException e) {
       long count = rejected.incrementAndGet();
+      metrics.skipped(type, events);
       logger.warn("Drop event queue is full or shutting down; skipped " + description
           + " (" + count + " skipped so far)");
     }
@@ -301,7 +335,7 @@ public class DropEventNotifier {
     return rejected.get();
   }
 
-  /** Drops whose events were not sent because of the table filters. */
+  /** Events not sent because of the table filters. */
   public long getFilteredCount() {
     return filtered.get();
   }
@@ -309,10 +343,11 @@ public class DropEventNotifier {
   /**
    * One daemon thread for every client in the JVM, created only when listeners are configured. On JVM shutdown, a
    * hook sends the queued events, waiting up to {@link #SHUTDOWN_TIMEOUT_SECONDS}, so a normal stop or redeploy
-   * doesn't lose them.
+   * doesn't lose them. Its queue size is reported as a metric.
    */
   private static final class SharedExecutor {
     static final ThreadPoolExecutor INSTANCE;
+    static final DropEventMetrics METRICS;
 
     static {
       INSTANCE = new ThreadPoolExecutor(1, 1, 60, TimeUnit.SECONDS,
@@ -326,6 +361,8 @@ public class DropEventNotifier {
           drain(INSTANCE, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
       }, "glue-drop-event-listener-shutdown"));
+      METRICS = DropEventMetrics.create();
+      METRICS.queueSize(INSTANCE.getQueue());
     }
   }
 }

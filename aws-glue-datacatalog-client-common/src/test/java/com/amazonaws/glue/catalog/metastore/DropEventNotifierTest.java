@@ -2,6 +2,7 @@ package com.amazonaws.glue.catalog.metastore;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
@@ -332,6 +333,50 @@ public class DropEventNotifierTest {
 
     verify(listener, never()).onDropTable(any(DropTableEvent.class));
     assertEquals(1, stopping.getRejectedCount());
+  }
+
+  @Test
+  public void reportsMetricsForEachOutcome() throws Exception {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    MetaStoreEventListener failing = mock(MetaStoreEventListener.class);
+    doThrow(new RuntimeException("SNS down")).when(failing).onDropTable(any(DropTableEvent.class));
+    DropEventNotifier measured = new DropEventNotifier(ImmutableList.of(listener, failing), DIRECT,
+        BEEKEEPER_UNREFERENCED, false, new MicrometerDropEventMetrics(registry));
+
+    measured.partitionsDropped(table, Arrays.asList(partition("a"), partition("b")), false);
+    measured.tableDropped(table, false);
+    measured.tableDropped(table(Collections.<String, String>emptyMap()), false);
+    measured.tableUnavailable("db", "tbl", 3, new NoSuchObjectException("db.tbl"));
+    measured.recordTableRead(TimeUnit.MILLISECONDS.toNanos(12), true);
+
+    assertEquals(4.0, events(registry, "partition", "delivered"), 0);
+    assertEquals(6.0, events(registry, "partition", "failed"), 0);
+    assertEquals(1.0, events(registry, "table", "delivered"), 0);
+    assertEquals(1.0, events(registry, "table", "failed"), 0);
+    assertEquals(1.0, events(registry, "table", "filtered"), 0);
+    assertEquals(4, registry.get(MicrometerDropEventMetrics.LISTENER).tag("type", "partition").timer().count());
+    assertEquals(1, registry.get(MicrometerDropEventMetrics.TABLE_READ).tag("result", "success").timer().count());
+  }
+
+  @Test
+  public void reportsSkippedEventsWhenTheQueueIsFull() throws Exception {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    Executor full = new Executor() {
+      @Override
+      public void execute(Runnable command) {
+        throw new RejectedExecutionException("full");
+      }
+    };
+    DropEventNotifier measured = new DropEventNotifier(ImmutableList.of(listener), full, null, false,
+        new MicrometerDropEventMetrics(registry));
+
+    measured.partitionsDropped(table, Arrays.asList(partition("a"), partition("b")), false);
+
+    assertEquals(2.0, events(registry, "partition", "skipped"), 0);
+  }
+
+  private static double events(SimpleMeterRegistry registry, String type, String result) {
+    return registry.get(MicrometerDropEventMetrics.EVENTS).tag("type", type).tag("result", result).counter().count();
   }
 
   @Test

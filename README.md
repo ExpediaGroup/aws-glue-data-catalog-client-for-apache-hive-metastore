@@ -161,6 +161,17 @@ off by default:
   parameter or a `table_type` containing `iceberg`, the same test Beekeeper uses. This keeps a mistakenly tagged
   Iceberg table from ever reaching a cleanup tool.
 
+When the host has Micrometer on its classpath, the client reports metrics to Micrometer's global registry; Waggle
+Dance, through Spring Boot, adds its registries (such as Prometheus) to it. Without Micrometer, no metrics are
+recorded and nothing else changes. Micrometer is a `provided` dependency, so it is not shipped with this client.
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `glue.drop.events` | counter | `type` (`table`, `partition`), `result` (`delivered`, `failed`, `skipped`, `filtered`) | `delivered` and `failed` count listener calls; `skipped` (queue full or shutting down) and `filtered` (table filters) count events |
+| `glue.drop.events.listener` | timer | `type` | Time of one listener call, e.g. one SNS publish for `ApiarySnsListener` |
+| `glue.drop.events.table.read` | timer | `result` (`success`, `failure`) | Time to read a dropped partition's table on the drop call: what events add to a partition drop |
+| `glue.drop.events.queue.size` | gauge | | Events waiting to be sent |
+
 `ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
 (the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).
 For Beekeeper, set `TABLE_PARAM_FILTER=beekeeper.*|table_type|metadata_location`. The filter must match the whole
