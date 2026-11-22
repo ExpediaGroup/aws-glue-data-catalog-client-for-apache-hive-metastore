@@ -126,11 +126,14 @@ through Apiary's `ApiarySnsListener`, then get the same events as from a Hive me
 	</property>
 
 - Only `onDropTable` and `onDropPartition` are called, after Glue confirms the delete.
+- Every event carries the table as it is at the time of the drop, as from a Hive metastore. For a partition drop,
+  the table is read on the drop call, right after Glue confirms the delete: one extra Glue read per partition drop
+  call (one per batch for `dropPartitions` by expression), only when listeners are configured. If it can't be read,
+  that drop's events are skipped and logged; the drop itself still succeeds.
 - Listeners run on one background daemon thread with a queue of 10,000 drops, so they never slow down or fail a
   drop. When the queue is full, the drop's events are skipped and logged. On JVM shutdown, queued events are sent
   first, waiting up to 10 seconds; any still queued after that are logged.
 - Dropping a table sends one drop table event; its partitions are deleted without events of their own.
-- A partition event also carries its table, read on the background thread and cached for 60 seconds.
 - Each listener needs a public constructor taking a Hadoop `Configuration`, and is loaded through the thread context
   classloader. If a listener can't be loaded, the error is logged and no events are sent; the client still works.
 - Listeners are created once per JVM for each value of the setting, with the configuration of the first client that
@@ -139,6 +142,24 @@ through Apiary's `ApiarySnsListener`, then get the same events as from a Hive me
 - Hive 3 client only.
 
 The setting is empty by default, which sends no events.
+
+Two optional settings limit which tables send events. Both apply to table and partition drops alike, and both are
+off by default:
+
+	<property>
+		<name>aws.glue.event.listeners.required-table-parameter</name>
+		<value>beekeeper.remove.unreferenced.data</value>
+	</property>
+	<property>
+		<name>aws.glue.event.listeners.skip-iceberg</name>
+		<value>true</value>
+	</property>
+
+- `aws.glue.event.listeners.required-table-parameter`: only tables where this parameter is `true` (case-insensitive)
+  send events. For Beekeeper, `beekeeper.remove.unreferenced.data` is the parameter its drop handling depends on.
+- `aws.glue.event.listeners.skip-iceberg`: no events for Iceberg tables, i.e. tables with a `metadata_location`
+  parameter or a `table_type` containing `iceberg`, the same test Beekeeper uses. This keeps a mistakenly tagged
+  Iceberg table from ever reaching a cleanup tool.
 
 `ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
 (the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).

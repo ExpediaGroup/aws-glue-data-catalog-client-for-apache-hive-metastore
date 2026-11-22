@@ -1550,6 +1550,58 @@ public class GlueMetastoreClientDelegateTest {
     assertNull(DropEventNotifierTest.RecordingListener.EVENTS.poll(500, TimeUnit.MILLISECONDS));
   }
 
+  @Test
+  public void testPartitionEventKeepsItsTableWhenTheTableIsDroppedStraightAfter() throws Exception {
+    List<String> values = Lists.newArrayList("foo");
+    Partition partition = new Partition().withDatabaseName(testDb.getName())
+      .withTableName(testTbl.getName()).withValues(values)
+      .withStorageDescriptor(TestObjects.getTestStorageDescriptor());
+    when(glueClient.deletePartition(any(DeletePartitionRequest.class))).thenReturn(new DeletePartitionResult());
+    when(glueClient.getPartition(any(GetPartitionRequest.class))).thenReturn(new GetPartitionResult().withPartition(partition));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
+    GlueMetastoreClientDelegate delegate = delegateWithRecordingListener();
+
+    delegate.dropPartition(testDb.getName(), testTbl.getName(), values, false, false, false);
+    // The table is gone before the queued partition event could have read it.
+    reset(glueClient);
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(new EntityNotFoundException("gone"));
+
+    ListenerEvent event = DropEventNotifierTest.RecordingListener.EVENTS.poll(10, TimeUnit.SECONDS);
+    assertTrue("expected a drop partition event, got " + event, event instanceof DropPartitionEvent);
+    assertEquals(testTbl.getParameters(), ((DropPartitionEvent) event).getTable().getParameters());
+  }
+
+  @Test
+  public void testDropPartitionSucceedsWhenItsTableCannotBeRead() throws Exception {
+    List<String> values = Lists.newArrayList("foo");
+    Partition partition = new Partition().withDatabaseName(testDb.getName())
+      .withTableName(testTbl.getName()).withValues(values)
+      .withStorageDescriptor(TestObjects.getTestStorageDescriptor());
+    when(glueClient.deletePartition(any(DeletePartitionRequest.class))).thenReturn(new DeletePartitionResult());
+    when(glueClient.getPartition(any(GetPartitionRequest.class))).thenReturn(new GetPartitionResult().withPartition(partition));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenThrow(new EntityNotFoundException("gone"));
+
+    assertTrue(delegateWithRecordingListener()
+      .dropPartition(testDb.getName(), testTbl.getName(), values, false, false, false));
+
+    verify(glueClient).deletePartition(any(DeletePartitionRequest.class));
+    assertNull(DropEventNotifierTest.RecordingListener.EVENTS.poll(500, TimeUnit.MILLISECONDS));
+  }
+
+  @Test
+  public void testDropPartitionReadsNoTableWhenListenersAreOff() throws Exception {
+    List<String> values = Lists.newArrayList("foo");
+    Partition partition = new Partition().withDatabaseName(testDb.getName())
+      .withTableName(testTbl.getName()).withValues(values)
+      .withStorageDescriptor(TestObjects.getTestStorageDescriptor());
+    when(glueClient.deletePartition(any(DeletePartitionRequest.class))).thenReturn(new DeletePartitionResult());
+    when(glueClient.getPartition(any(GetPartitionRequest.class))).thenReturn(new GetPartitionResult().withPartition(partition));
+
+    metastoreClientDelegate.dropPartition(testDb.getName(), testTbl.getName(), values, false, false, false);
+
+    verify(glueClient, never()).getTable(any(GetTableRequest.class));
+  }
+
   private GlueMetastoreClientDelegate delegateWithRecordingListener() throws Exception {
     DropEventNotifierTest.RecordingListener.EVENTS.clear();
     HiveConf listenerConf = new HiveConf(conf);

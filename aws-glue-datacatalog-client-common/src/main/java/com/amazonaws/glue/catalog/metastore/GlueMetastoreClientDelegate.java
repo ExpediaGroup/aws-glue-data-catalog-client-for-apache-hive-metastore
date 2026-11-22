@@ -1211,11 +1211,25 @@ public class GlueMetastoreClientDelegate {
    * Sends the partitions that a batch delete removed, as read before the delete, to the listeners in
    * {@code aws.glue.event.listeners}. For clients that delete partitions without going through
    * {@link #dropPartition}.
+   *
+   * <p>When listeners are configured, the partitions' table is read here, on the drop call, so the events carry
+   * the table as it is at the time of the drop, as a Hive metastore's do. This costs one Glue read per call. If the
+   * table can't be read, the events are skipped and logged; the drop itself is unaffected. Never throws.
    */
   public void notifyPartitionsDropped(String dbName, String tblName,
                                       List<org.apache.hadoop.hive.metastore.api.Partition> partitions,
                                       boolean deleteData) {
-    dropEventNotifier.partitionsDropped(dbName, tblName, partitions, deleteData, this::getTable);
+    if (!dropEventNotifier.isEnabled() || partitions == null || partitions.isEmpty()) {
+      return;
+    }
+    org.apache.hadoop.hive.metastore.api.Table table;
+    try {
+      table = getTable(dbName, tblName);
+    } catch (Exception e) {
+      dropEventNotifier.tableUnavailable(dbName, tblName, partitions.size(), e);
+      return;
+    }
+    dropEventNotifier.partitionsDropped(table, partitions, deleteData);
   }
 
   private boolean dropPartition(

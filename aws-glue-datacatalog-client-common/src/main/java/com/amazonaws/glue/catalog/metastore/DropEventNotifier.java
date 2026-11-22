@@ -1,9 +1,6 @@
 package com.amazonaws.glue.catalog.metastore;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Ticker;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.conf.Configuration;
@@ -15,11 +12,11 @@ import org.apache.hadoop.hive.metastore.events.DropPartitionEvent;
 import org.apache.hadoop.hive.metastore.events.DropTableEvent;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreUtils;
 import org.apache.log4j.Logger;
-import org.apache.thrift.TException;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -30,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS;
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS_REQUIRED_TABLE_PARAMETER;
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS_SKIP_ICEBERG;
 
 /**
  * Calls Hive {@link MetaStoreEventListener}s after this client drops a table or partition.
@@ -40,10 +39,12 @@ import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTE
  * Listeners such as Apiary's {@code ApiarySnsListener} can then publish the same drop events they did from a Hive
  * metastore, for tools like Beekeeper that clean up the dropped data.
  *
- * <p>Listeners run on a single background thread after Glue confirms the delete, so they can never slow down or
- * fail a drop. When the queue is full, an event is dropped and logged. Partition events need the table too, for
- * its parameters; it is read on the background thread and cached briefly, as partitions are often dropped in
- * bursts on the same table.
+ * <p>The caller passes the table as it was at the time of the drop, read on the drop call itself, as a Hive
+ * metastore does. Only the listener calls run later, on a single background thread, so they can never slow down or
+ * fail a drop. When the queue is full, an event is skipped and logged.
+ *
+ * <p>Events can be limited to tables with a given parameter set to {@code true}, and Iceberg tables can be skipped;
+ * see {@code aws.glue.event.listeners.required-table-parameter} and {@code aws.glue.event.listeners.skip-iceberg}.
  */
 public class DropEventNotifier {
 
@@ -51,18 +52,16 @@ public class DropEventNotifier {
 
   static final String THREAD_NAME_FORMAT = "glue-drop-event-listener-%d";
   static final int QUEUE_SIZE = 10000;
-  static final long TABLE_CACHE_TTL_SECONDS = 60;
-  static final int TABLE_CACHE_MAX_SIZE = 1000;
   /** How long a JVM shutdown waits for queued events to be sent. */
   static final long SHUTDOWN_TIMEOUT_SECONDS = 10;
 
-  /** Reads the table that a dropped partition belongs to. */
-  public interface TableLoader {
-    Table getTable(String dbName, String tableName) throws TException;
-  }
+  // Same test as Beekeeper's IsIcebergTablePredicate.
+  static final String METADATA_LOCATION = "metadata_location";
+  static final String TABLE_TYPE = "table_type";
+  static final String ICEBERG = "iceberg";
 
   private static final DropEventNotifier DISABLED =
-      new DropEventNotifier(Collections.<MetaStoreEventListener>emptyList(), null, Ticker.systemTicker());
+      new DropEventNotifier(Collections.<MetaStoreEventListener>emptyList(), null, null, false);
 
   /**
    * Listeners by the {@code aws.glue.event.listeners} value that created them, shared by every client in the JVM.
@@ -73,11 +72,13 @@ public class DropEventNotifier {
 
   private final List<MetaStoreEventListener> listeners;
   private final Executor executor;
-  private final Cache<String, Table> tableCache;
+  private final String requiredTableParameter;
+  private final boolean skipIceberg;
 
   private final AtomicLong delivered = new AtomicLong();
   private final AtomicLong failed = new AtomicLong();
   private final AtomicLong rejected = new AtomicLong();
+  private final AtomicLong filtered = new AtomicLong();
 
   /**
    * Returns a notifier for the listeners named in {@code aws.glue.event.listeners}. Listeners are created once per
@@ -108,18 +109,19 @@ public class DropEventNotifier {
         }
       }
     }
-    return new DropEventNotifier(listeners, SharedExecutor.INSTANCE, Ticker.systemTicker());
+    String requiredTableParameter = conf.getTrimmed(AWS_GLUE_EVENT_LISTENERS_REQUIRED_TABLE_PARAMETER, "");
+    return new DropEventNotifier(listeners, SharedExecutor.INSTANCE,
+        requiredTableParameter.isEmpty() ? null : requiredTableParameter,
+        conf.getBoolean(AWS_GLUE_EVENT_LISTENERS_SKIP_ICEBERG, false));
   }
 
   @VisibleForTesting
-  DropEventNotifier(List<MetaStoreEventListener> listeners, Executor executor, Ticker ticker) {
+  DropEventNotifier(List<MetaStoreEventListener> listeners, Executor executor, String requiredTableParameter,
+                    boolean skipIceberg) {
     this.listeners = ImmutableList.copyOf(listeners);
     this.executor = executor;
-    this.tableCache = CacheBuilder.newBuilder()
-        .maximumSize(TABLE_CACHE_MAX_SIZE)
-        .expireAfterWrite(TABLE_CACHE_TTL_SECONDS, TimeUnit.SECONDS)
-        .ticker(ticker)
-        .build();
+    this.requiredTableParameter = requiredTableParameter;
+    this.skipIceberg = skipIceberg;
   }
 
   public boolean isEnabled() {
@@ -135,106 +137,123 @@ public class DropEventNotifier {
       return;
     }
     try {
-      queueTableDropped(table, deleteData);
+      if (!wanted(table)) {
+        return;
+      }
+      final String name = table.getDbName() + "." + table.getTableName();
+      submit("drop table " + name, new Runnable() {
+        @Override
+        public void run() {
+          DropTableEvent event;
+          try {
+            event = new DropTableEvent(table, true, deleteData, null);
+          } catch (Throwable t) {
+            failed.addAndGet(listeners.size());
+            logger.warn("Unable to build drop table event for " + name, t);
+            return;
+          }
+          for (MetaStoreEventListener listener : listeners) {
+            try {
+              listener.onDropTable(event);
+              delivered.incrementAndGet();
+            } catch (Throwable t) {
+              failed.incrementAndGet();
+              logger.warn("Listener " + listener.getClass().getName() + " failed on drop table " + name, t);
+            }
+          }
+        }
+      });
     } catch (RuntimeException e) {
       failed.addAndGet(listeners.size());
       logger.warn("Unable to queue drop table event for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
 
-  private void queueTableDropped(final Table table, final boolean deleteData) {
-    tableCache.invalidate(key(table.getDbName(), table.getTableName()));
-    submit("drop table " + table.getDbName() + "." + table.getTableName(), new Runnable() {
-      @Override
-      public void run() {
-        DropTableEvent event;
-        try {
-          event = new DropTableEvent(table, true, deleteData, null);
-        } catch (Throwable t) {
-          failed.addAndGet(listeners.size());
-          logger.warn("Unable to build drop table event for " + table.getDbName() + "." + table.getTableName(), t);
-          return;
-        }
-        for (MetaStoreEventListener listener : listeners) {
-          try {
-            listener.onDropTable(event);
-            delivered.incrementAndGet();
-          } catch (Throwable t) {
-            failed.incrementAndGet();
-            logger.warn("Listener " + listener.getClass().getName() + " failed on drop table "
-                + table.getDbName() + "." + table.getTableName(), t);
-          }
-        }
-      }
-    });
-  }
-
   /**
-   * Call after Glue confirmed the partitions were deleted, with the partitions as read before the delete. The
-   * table is read on the background thread, through {@code tableLoader}, and cached for a short time. Never
-   * throws: this runs on the drop path.
+   * Call after Glue confirmed the partitions were deleted, with the partitions as read before the delete and their
+   * table as read on the drop call. Never throws: this runs on the drop path.
    */
-  public void partitionsDropped(String dbName, String tableName, List<Partition> partitions,
-                                boolean deleteData, TableLoader tableLoader) {
-    if (!isEnabled() || partitions == null || partitions.isEmpty()) {
+  public void partitionsDropped(final Table table, List<Partition> partitions, final boolean deleteData) {
+    if (!isEnabled() || table == null || partitions == null || partitions.isEmpty()) {
       return;
     }
     try {
-      queuePartitionsDropped(dbName, tableName, partitions, deleteData, tableLoader);
-    } catch (RuntimeException e) {
-      failed.addAndGet((long) partitions.size() * listeners.size());
-      logger.warn("Unable to queue drop partition events for " + dbName + "." + tableName, e);
-    }
-  }
-
-  private void queuePartitionsDropped(final String dbName, final String tableName, List<Partition> partitions,
-                                      final boolean deleteData, final TableLoader tableLoader) {
-    final List<Partition> dropped = ImmutableList.copyOf(partitions);
-    final String name = dbName + "." + tableName;
-    submit("drop " + dropped.size() + " partition(s) of " + name, new Runnable() {
-      @Override
-      public void run() {
-        Table table;
-        try {
-          table = cachedTable(dbName, tableName, tableLoader);
-        } catch (Throwable t) {
-          failed.addAndGet((long) dropped.size() * listeners.size());
-          logger.warn("Unable to read table " + name + " for " + dropped.size()
-              + " drop partition event(s); events not sent", t);
-          return;
-        }
-        for (Partition partition : dropped) {
-          DropPartitionEvent event;
-          try {
-            event = new DropPartitionEvent(table, partition, true, deleteData, null);
-          } catch (Throwable t) {
-            failed.addAndGet(listeners.size());
-            logger.warn("Unable to build drop partition event for " + partition.getValues() + " of " + name, t);
-            continue;
-          }
-          for (MetaStoreEventListener listener : listeners) {
+      if (!wanted(table)) {
+        return;
+      }
+      final List<Partition> dropped = ImmutableList.copyOf(partitions);
+      final String name = table.getDbName() + "." + table.getTableName();
+      submit("drop " + dropped.size() + " partition(s) of " + name, new Runnable() {
+        @Override
+        public void run() {
+          for (Partition partition : dropped) {
+            DropPartitionEvent event;
             try {
-              listener.onDropPartition(event);
-              delivered.incrementAndGet();
+              event = new DropPartitionEvent(table, partition, true, deleteData, null);
             } catch (Throwable t) {
-              failed.incrementAndGet();
-              logger.warn("Listener " + listener.getClass().getName() + " failed on drop partition "
-                  + partition.getValues() + " of " + name, t);
+              failed.addAndGet(listeners.size());
+              logger.warn("Unable to build drop partition event for " + partition.getValues() + " of " + name, t);
+              continue;
+            }
+            for (MetaStoreEventListener listener : listeners) {
+              try {
+                listener.onDropPartition(event);
+                delivered.incrementAndGet();
+              } catch (Throwable t) {
+                failed.incrementAndGet();
+                logger.warn("Listener " + listener.getClass().getName() + " failed on drop partition "
+                    + partition.getValues() + " of " + name, t);
+              }
             }
           }
         }
-      }
-    });
+      });
+    } catch (RuntimeException e) {
+      failed.addAndGet((long) partitions.size() * listeners.size());
+      logger.warn("Unable to queue drop partition events for " + table.getDbName() + "." + table.getTableName(), e);
+    }
   }
 
-  private Table cachedTable(String dbName, String tableName, TableLoader tableLoader) throws TException {
-    String key = key(dbName, tableName);
-    Table table = tableCache.getIfPresent(key);
-    if (table == null) {
-      table = tableLoader.getTable(dbName, tableName);
-      tableCache.put(key, table);
+  /**
+   * Call when partitions were dropped but their table could not be read, so no events can be sent for them.
+   * Logs and counts them. Never throws.
+   */
+  public void tableUnavailable(String dbName, String tableName, int partitionCount, Exception cause) {
+    if (!isEnabled() || partitionCount <= 0) {
+      return;
     }
-    return table;
+    failed.addAndGet((long) partitionCount * listeners.size());
+    logger.warn("Unable to read table " + dbName + "." + tableName + " for " + partitionCount
+        + " drop partition event(s); events not sent", cause);
+  }
+
+  private boolean wanted(Table table) {
+    Map<String, String> parameters = table.getParameters();
+    if (requiredTableParameter != null
+        && (parameters == null || !"true".equalsIgnoreCase(trim(parameters.get(requiredTableParameter))))) {
+      filtered.incrementAndGet();
+      return false;
+    }
+    if (skipIceberg && isIceberg(parameters)) {
+      filtered.incrementAndGet();
+      return false;
+    }
+    return true;
+  }
+
+  @VisibleForTesting
+  static boolean isIceberg(Map<String, String> parameters) {
+    if (parameters == null) {
+      return false;
+    }
+    String metadataLocation = trim(parameters.get(METADATA_LOCATION));
+    String tableType = parameters.get(TABLE_TYPE);
+    return (metadataLocation != null && !metadataLocation.isEmpty())
+        || (tableType != null && tableType.toLowerCase(Locale.ROOT).contains(ICEBERG));
+  }
+
+  private static String trim(String value) {
+    return value == null ? null : value.trim();
   }
 
   private void submit(String description, Runnable task) {
@@ -267,10 +286,6 @@ public class DropEventNotifier {
     return left;
   }
 
-  private static String key(String dbName, String tableName) {
-    return (dbName + "." + tableName).toLowerCase(Locale.ROOT);
-  }
-
   /** Listener calls that completed. */
   public long getDeliveredCount() {
     return delivered.get();
@@ -281,9 +296,14 @@ public class DropEventNotifier {
     return failed.get();
   }
 
-  /** Drops whose events were skipped because the queue was full. */
+  /** Drops whose events were skipped because the queue was full or shutting down. */
   public long getRejectedCount() {
     return rejected.get();
+  }
+
+  /** Drops whose events were not sent because of the table filters. */
+  public long getFilteredCount() {
+    return filtered.get();
   }
 
   /**
