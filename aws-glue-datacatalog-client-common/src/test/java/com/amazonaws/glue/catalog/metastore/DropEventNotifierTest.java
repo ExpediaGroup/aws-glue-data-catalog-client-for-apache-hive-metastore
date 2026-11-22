@@ -2,6 +2,8 @@ package com.amazonaws.glue.catalog.metastore;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
@@ -347,15 +349,40 @@ public class DropEventNotifierTest {
     measured.tableDropped(table, false);
     measured.tableDropped(table(Collections.<String, String>emptyMap()), false);
     measured.tableUnavailable("db", "tbl", 3, new NoSuchObjectException("db.tbl"));
-    measured.getStats().tableRead(TimeUnit.MILLISECONDS.toNanos(12), true);
+    measured.getStats().tableRead(TimeUnit.MILLISECONDS.toNanos(12), true, DropEventMetrics.NONE);
 
-    assertEquals(4.0, events(registry, "partition", "delivered"), 0);
-    assertEquals(6.0, events(registry, "partition", "failed"), 0);
-    assertEquals(1.0, events(registry, "table", "delivered"), 0);
-    assertEquals(1.0, events(registry, "table", "failed"), 0);
-    assertEquals(1.0, events(registry, "table", "filtered"), 0);
-    assertEquals(4, registry.get(MicrometerDropEventMetrics.LISTENER).tag("type", "partition").timer().count());
-    assertEquals(1, registry.get(MicrometerDropEventMetrics.TABLE_READ).tag("result", "success").timer().count());
+    assertEquals(4.0, events(registry, "partition", "delivered", DropEventMetrics.NONE), 0);
+    assertEquals(6.0, events(registry, "partition", "failed", DropEventMetrics.TABLE_UNAVAILABLE), 0);
+    assertEquals(1.0, events(registry, "table", "delivered", DropEventMetrics.NONE), 0);
+    assertEquals(1.0, events(registry, "table", "failed", DropEventMetrics.LISTENER_ERROR), 0);
+    assertEquals(1.0, events(registry, "table", "filtered", DropEventMetrics.TABLE_PARAMETER_NOT_TRUE), 0);
+    assertEquals(4, timerCount(registry, MicrometerDropEventMetrics.LISTENER, "type", "partition"));
+    assertEquals(1, timerCount(registry, MicrometerDropEventMetrics.LISTENER, "result", "failure"));
+    assertEquals(1, timerCount(registry, MicrometerDropEventMetrics.TABLE_READ, "result", "success"));
+  }
+
+  @Test
+  public void reportsIcebergAsTheFilterReason() throws Exception {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    DropEventNotifier measured = new DropEventNotifier(ImmutableList.of(listener), DIRECT, null, true,
+        new MicrometerDropEventMetrics(registry));
+
+    measured.tableDropped(table(ImmutableMap.of("table_type", "ICEBERG")), false);
+
+    assertEquals(1.0, events(registry, "table", "filtered", DropEventMetrics.ICEBERG), 0);
+  }
+
+  @Test
+  public void reportsShuttingDownAsTheSkipReason() throws Exception {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    ThreadPoolExecutor executor = singleThreadExecutor();
+    DropEventNotifier measured = new DropEventNotifier(ImmutableList.of(listener), executor, null, false,
+        new MicrometerDropEventMetrics(registry));
+    DropEventNotifier.drain(executor, 1, TimeUnit.SECONDS);
+
+    measured.tableDropped(table, false);
+
+    assertEquals(1.0, events(registry, "table", "skipped", DropEventMetrics.SHUTTING_DOWN), 0);
   }
 
   @Test
@@ -372,11 +399,25 @@ public class DropEventNotifierTest {
 
     measured.partitionsDropped(table, Arrays.asList(partition("a"), partition("b")), false);
 
-    assertEquals(2.0, events(registry, "partition", "skipped"), 0);
+    assertEquals(2.0, events(registry, "partition", "skipped", DropEventMetrics.QUEUE_FULL), 0);
   }
 
-  private static double events(SimpleMeterRegistry registry, String type, String result) {
-    return registry.get(MicrometerDropEventMetrics.EVENTS).tag("type", type).tag("result", result).counter().count();
+  /** Sum over listeners, as each listener has its own series. */
+  private static double events(SimpleMeterRegistry registry, String type, String result, String reason) {
+    double total = 0;
+    for (Counter counter : registry.find(MicrometerDropEventMetrics.EVENTS).tag("type", type)
+        .tag("result", result).tag("reason", reason).counters()) {
+      total += counter.count();
+    }
+    return total;
+  }
+
+  private static long timerCount(SimpleMeterRegistry registry, String name, String tag, String value) {
+    long total = 0;
+    for (Timer timer : registry.find(name).tag(tag, value).timers()) {
+      total += timer.count();
+    }
+    return total;
   }
 
   @Test

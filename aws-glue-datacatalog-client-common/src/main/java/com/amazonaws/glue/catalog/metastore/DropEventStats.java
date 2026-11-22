@@ -4,7 +4,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Counts and timings for the drop events of one {@link DropEventNotifier}: kept as in-process counters and
- * forwarded to {@link DropEventMetrics} (Micrometer when available). Never throws.
+ * forwarded, with their reason and listener, to {@link DropEventMetrics} (Micrometer when available). Never throws.
  */
 public class DropEventStats {
 
@@ -19,41 +19,45 @@ public class DropEventStats {
     this.metrics = metrics;
   }
 
-  /** One listener call completed. */
-  void delivered(String type) {
+  /** One call to {@code listener} completed. */
+  void delivered(String type, String listener) {
     delivered.incrementAndGet();
-    metrics.delivered(type, 1);
+    metrics.delivered(type, listener);
   }
 
-  /** {@code count} listener calls threw or could not be made. */
-  void failed(String type, long count) {
+  /** {@code count} listener calls failed, or could not be made, for {@code reason}. */
+  void failed(String type, String reason, String listener, long count) {
     failed.addAndGet(count);
-    metrics.failed(type, count);
+    metrics.failed(type, reason, listener, count);
   }
 
   /**
-   * A drop's {@code events} were skipped because the queue was full or shutting down. Returns how many drops have
-   * been skipped so far.
+   * A drop's {@code events} were skipped for {@code reason}: the queue was full or shutting down. Returns how many
+   * drops have been skipped so far.
    */
-  long skipped(String type, int events) {
-    metrics.skipped(type, events);
+  long skipped(String type, String reason, int events) {
+    metrics.skipped(type, reason, events);
     return skipped.incrementAndGet();
   }
 
-  /** {@code events} were not sent because of the table filters. */
-  void filtered(String type, int events) {
+  /** {@code events} were not sent because of a table filter, for {@code reason}. */
+  void filtered(String type, String reason, int events) {
     filtered.addAndGet(events);
-    metrics.filtered(type, events);
+    metrics.filtered(type, reason, events);
   }
 
-  /** One listener call took {@code nanos}. */
-  void listenerCall(String type, long nanos) {
-    metrics.listenerCall(type, nanos);
+  /** One call to {@code listener} took {@code nanos}. */
+  void listenerCall(String type, String listener, boolean succeeded, long nanos) {
+    metrics.listenerCall(type, listener, succeeded, nanos);
   }
 
-  /** Reading a dropped partition's table on the drop call took {@code nanos}. */
-  public void tableRead(long nanos, boolean succeeded) {
-    metrics.tableRead(nanos, succeeded);
+  /**
+   * Reading a dropped partition's table on the drop call took {@code nanos}. {@code reason} is
+   * {@link DropEventMetrics#NONE} on success, otherwise {@link DropEventMetrics#NOT_FOUND} or
+   * {@link DropEventMetrics#ERROR}.
+   */
+  public void tableRead(long nanos, boolean succeeded, String reason) {
+    metrics.tableRead(nanos, succeeded, reason);
   }
 
   /** Listener calls that completed. */
@@ -61,7 +65,7 @@ public class DropEventStats {
     return delivered.get();
   }
 
-  /** Listener calls that threw, or that were not made because the table could not be read. */
+  /** Listener calls that threw, or that were not made because the event couldn't be built, queued or completed. */
   public long getFailedCount() {
     return failed.get();
   }

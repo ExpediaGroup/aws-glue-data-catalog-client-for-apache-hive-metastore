@@ -154,26 +154,29 @@ public class DropEventNotifier {
           try {
             event = new DropTableEvent(table, true, deleteData, null);
           } catch (Throwable t) {
-            stats.failed(TABLE, listeners.size());
+            stats.failed(TABLE, DropEventMetrics.EVENT_ERROR, DropEventMetrics.NONE, listeners.size());
             logger.warn("Unable to build drop table event for " + name, t);
             return;
           }
           for (MetaStoreEventListener listener : listeners) {
+            String listenerName = listenerName(listener);
             long start = System.nanoTime();
+            boolean succeeded = false;
             try {
               listener.onDropTable(event);
-              stats.delivered(TABLE);
+              succeeded = true;
+              stats.delivered(TABLE, listenerName);
             } catch (Throwable t) {
-              stats.failed(TABLE, 1);
+              stats.failed(TABLE, DropEventMetrics.LISTENER_ERROR, listenerName, 1);
               logger.warn("Listener " + listener.getClass().getName() + " failed on drop table " + name, t);
             } finally {
-              stats.listenerCall(TABLE, System.nanoTime() - start);
+              stats.listenerCall(TABLE, listenerName, succeeded, System.nanoTime() - start);
             }
           }
         }
       });
     } catch (RuntimeException e) {
-      stats.failed(TABLE, listeners.size());
+      stats.failed(TABLE, DropEventMetrics.QUEUE_ERROR, DropEventMetrics.NONE, listeners.size());
       logger.warn("Unable to queue drop table event for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
@@ -200,28 +203,32 @@ public class DropEventNotifier {
             try {
               event = new DropPartitionEvent(table, partition, true, deleteData, null);
             } catch (Throwable t) {
-              stats.failed(PARTITION, listeners.size());
+              stats.failed(PARTITION, DropEventMetrics.EVENT_ERROR, DropEventMetrics.NONE, listeners.size());
               logger.warn("Unable to build drop partition event for " + partition.getValues() + " of " + name, t);
               continue;
             }
             for (MetaStoreEventListener listener : listeners) {
+              String listenerName = listenerName(listener);
               long start = System.nanoTime();
+              boolean succeeded = false;
               try {
                 listener.onDropPartition(event);
-                stats.delivered(PARTITION);
+                succeeded = true;
+                stats.delivered(PARTITION, listenerName);
               } catch (Throwable t) {
-                stats.failed(PARTITION, 1);
+                stats.failed(PARTITION, DropEventMetrics.LISTENER_ERROR, listenerName, 1);
                 logger.warn("Listener " + listener.getClass().getName() + " failed on drop partition "
                     + partition.getValues() + " of " + name, t);
               } finally {
-                stats.listenerCall(PARTITION, System.nanoTime() - start);
+                stats.listenerCall(PARTITION, listenerName, succeeded, System.nanoTime() - start);
               }
             }
           }
         }
       });
     } catch (RuntimeException e) {
-      stats.failed(PARTITION, (long) partitions.size() * listeners.size());
+      stats.failed(PARTITION, DropEventMetrics.QUEUE_ERROR, DropEventMetrics.NONE,
+          (long) partitions.size() * listeners.size());
       logger.warn("Unable to queue drop partition events for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
@@ -234,20 +241,24 @@ public class DropEventNotifier {
     if (!isEnabled() || partitionCount <= 0) {
       return;
     }
-    stats.failed(PARTITION, (long) partitionCount * listeners.size());
+    stats.failed(PARTITION, DropEventMetrics.TABLE_UNAVAILABLE, DropEventMetrics.NONE,
+        (long) partitionCount * listeners.size());
     logger.warn("Unable to read table " + dbName + "." + tableName + " for " + partitionCount
         + " drop partition event(s); events not sent", cause);
   }
 
   private boolean wanted(Table table, String type, int events) {
     Map<String, String> parameters = table.getParameters();
-    boolean wanted = (requiredTableParameter == null
-        || (parameters != null && "true".equalsIgnoreCase(trim(parameters.get(requiredTableParameter)))))
-        && !(skipIceberg && isIceberg(parameters));
-    if (!wanted) {
-      stats.filtered(type, events);
+    if (requiredTableParameter != null
+        && (parameters == null || !"true".equalsIgnoreCase(trim(parameters.get(requiredTableParameter))))) {
+      stats.filtered(type, DropEventMetrics.TABLE_PARAMETER_NOT_TRUE, events);
+      return false;
     }
-    return wanted;
+    if (skipIceberg && isIceberg(parameters)) {
+      stats.filtered(type, DropEventMetrics.ICEBERG, events);
+      return false;
+    }
+    return true;
   }
 
   @VisibleForTesting
@@ -265,11 +276,17 @@ public class DropEventNotifier {
     return value == null ? null : value.trim();
   }
 
+  private static String listenerName(MetaStoreEventListener listener) {
+    return listener.getClass().getSimpleName();
+  }
+
   private void submit(String type, int events, String description, Runnable task) {
     try {
       executor.execute(task);
     } catch (RejectedExecutionException e) {
-      long count = stats.skipped(type, events);
+      boolean shuttingDown = executor instanceof ThreadPoolExecutor && ((ThreadPoolExecutor) executor).isShutdown();
+      long count = stats.skipped(type,
+          shuttingDown ? DropEventMetrics.SHUTTING_DOWN : DropEventMetrics.QUEUE_FULL, events);
       logger.warn("Drop event queue is full or shutting down; skipped " + description
           + " (" + count + " skipped so far)");
     }

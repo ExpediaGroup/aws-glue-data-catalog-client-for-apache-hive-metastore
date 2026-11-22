@@ -167,10 +167,14 @@ recorded and nothing else changes. Micrometer is a `provided` dependency, so it 
 
 | Meter | Type | Tags | Meaning |
 |-------|------|------|---------|
-| `glue.drop.events` | counter | `type` (`table`, `partition`), `result` (`delivered`, `failed`, `skipped`, `filtered`) | `delivered` and `failed` count listener calls; `skipped` (queue full or shutting down) and `filtered` (table filters) count events |
-| `glue.drop.events.listener` | timer | `type` | Time of one listener call, e.g. one SNS publish for `ApiarySnsListener` |
-| `glue.drop.events.table.read` | timer | `result` (`success`, `failure`) | Time to read a dropped partition's table on the drop call: what events add to a partition drop |
+| `glue.drop.events` | counter | `type` (`table`, `partition`), `result` (`delivered`, `failed`, `skipped`, `filtered`), `reason`, `listener` | `delivered` and `failed` count listener calls; `skipped` and `filtered` count events |
+| `glue.drop.events.listener` | timer | `type`, `listener`, `result` (`success`, `failure`) | Time of one listener call, e.g. one SNS publish for `ApiarySnsListener` |
+| `glue.drop.events.table.read` | timer | `result` (`success`, `failure`), `reason` (`none`, `not_found`, `error`) | Time to read a dropped partition's table on the drop call: what events add to a partition drop |
 | `glue.drop.events.queue.size` | gauge | | Events waiting to be sent |
+
+`reason` values for `glue.drop.events`: `failed`: `listener_error`, `event_error`, `queue_error`, `table_unavailable`;
+`skipped`: `queue_full`, `shutting_down`; `filtered`: `table_parameter_not_true`, `iceberg`. `listener` is the
+listener's class simple name. A tag that doesn't apply is `none`, so every series of a meter has the same tag keys.
 
 `ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
 (the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).
