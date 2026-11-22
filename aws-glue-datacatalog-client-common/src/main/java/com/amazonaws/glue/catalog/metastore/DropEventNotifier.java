@@ -332,12 +332,17 @@ public class DropEventNotifier {
           new ThreadFactoryBuilder().setNameFormat(THREAD_NAME_FORMAT).setDaemon(true).build(),
           new ThreadPoolExecutor.AbortPolicy());
       INSTANCE.allowCoreThreadTimeOut(true);
-      Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-        @Override
-        public void run() {
-          drain(INSTANCE, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        }
-      }, "glue-drop-event-listener-shutdown"));
+      try {
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+          @Override
+          public void run() {
+            drain(INSTANCE, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+          }
+        }, "glue-drop-event-listener-shutdown"));
+      } catch (IllegalStateException | SecurityException e) {
+        // The JVM is already shutting down, or hooks are not allowed: never fail the client for this.
+        logger.warn("Unable to register the drop event shutdown hook; queued events may be lost on shutdown", e);
+      }
       METRICS = DropEventMetrics.create();
       METRICS.queueSize(INSTANCE.getQueue());
     }

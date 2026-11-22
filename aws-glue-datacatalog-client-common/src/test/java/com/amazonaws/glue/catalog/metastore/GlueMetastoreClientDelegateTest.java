@@ -1589,6 +1589,22 @@ public class GlueMetastoreClientDelegateTest {
   }
 
   @Test
+  public void testDropPartitionWithDeleteDataReadsTheTableOnceForEventsAndDataCleanup() throws Exception {
+    List<String> values = Lists.newArrayList("foo");
+    Partition partition = new Partition().withDatabaseName(testDb.getName())
+      .withTableName(testTbl.getName()).withValues(values)
+      .withStorageDescriptor(TestObjects.getTestStorageDescriptor());
+    when(glueClient.deletePartition(any(DeletePartitionRequest.class))).thenReturn(new DeletePartitionResult());
+    when(glueClient.getPartition(any(GetPartitionRequest.class))).thenReturn(new GetPartitionResult().withPartition(partition));
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(testTbl));
+
+    delegateWithRecordingListener().dropPartition(testDb.getName(), testTbl.getName(), values, false, true, false);
+
+    verify(glueClient, times(1)).getTable(any(GetTableRequest.class));
+    assertTrue(DropEventNotifierTest.RecordingListener.EVENTS.poll(10, TimeUnit.SECONDS) instanceof DropPartitionEvent);
+  }
+
+  @Test
   public void testDropPartitionReadsNoTableWhenListenersAreOff() throws Exception {
     List<String> values = Lists.newArrayList("foo");
     Partition partition = new Partition().withDatabaseName(testDb.getName())

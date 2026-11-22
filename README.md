@@ -127,9 +127,11 @@ through Apiary's `ApiarySnsListener`, then get the same events as from a Hive me
 
 - Only `onDropTable` and `onDropPartition` are called, after Glue confirms the delete.
 - Every event carries the table as it is at the time of the drop, as from a Hive metastore. For a partition drop,
-  the table is read on the drop call, right after Glue confirms the delete: one extra Glue read per partition drop
-  call (one per batch for `dropPartitions` by expression), only when listeners are configured. If it can't be read,
-  that drop's events are skipped and logged; the drop itself still succeeds.
+  the table is read on the drop call, right after Glue confirms the delete, only when listeners are configured. A
+  single partition drop with `deleteData` reads the table anyway, to check whether it is external, and reuses that
+  read; otherwise it is one extra Glue read per partition drop call (one per batch for `dropPartitions` by
+  expression). If it can't be read, that drop's events are skipped and logged; the drop itself still succeeds.
+- `DROP DATABASE ... CASCADE` sends no events: Glue deletes the database's tables itself.
 - Listeners run on one background daemon thread with a queue of 10,000 drops, so they never slow down or fail a
   drop. When the queue is full, the drop's events are skipped and logged. On JVM shutdown, queued events are sent
   first, waiting up to 10 seconds; any still queued after that are logged.

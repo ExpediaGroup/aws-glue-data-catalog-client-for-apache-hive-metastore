@@ -1222,18 +1222,29 @@ public class GlueMetastoreClientDelegate {
     if (!dropEventNotifier.isEnabled() || partitions == null || partitions.isEmpty()) {
       return;
     }
-    org.apache.hadoop.hive.metastore.api.Table table;
+    org.apache.hadoop.hive.metastore.api.Table table = readTableForDropEvents(dbName, tblName, partitions.size());
+    if (table != null) {
+      dropEventNotifier.partitionsDropped(table, partitions, deleteData);
+    }
+  }
+
+  /**
+   * Reads the table of dropped partitions for their events, recording how long it took. Returns null, having
+   * logged and counted the skipped events, if it can't be read. Never throws.
+   */
+  private org.apache.hadoop.hive.metastore.api.Table readTableForDropEvents(String dbName, String tblName,
+                                                                            int partitionCount) {
     long start = System.nanoTime();
     try {
-      table = getTable(dbName, tblName);
+      org.apache.hadoop.hive.metastore.api.Table table = getTable(dbName, tblName);
+      dropEventNotifier.getStats().tableRead(System.nanoTime() - start, true, DropEventMetrics.NONE);
+      return table;
     } catch (Exception e) {
       dropEventNotifier.getStats().tableRead(System.nanoTime() - start, false,
           e instanceof NoSuchObjectException ? DropEventMetrics.NOT_FOUND : DropEventMetrics.ERROR);
-      dropEventNotifier.tableUnavailable(dbName, tblName, partitions.size(), e);
-      return;
+      dropEventNotifier.tableUnavailable(dbName, tblName, partitionCount, e);
+      return null;
     }
-    dropEventNotifier.getStats().tableRead(System.nanoTime() - start, true, DropEventMetrics.NONE);
-    dropEventNotifier.partitionsDropped(table, partitions, deleteData);
   }
 
   private boolean dropPartition(
@@ -1267,24 +1278,31 @@ public class GlueMetastoreClientDelegate {
       logger.error(msg, e);
       throw new MetaException(msg + e);
     }
-    if (notifyListeners) {
-      notifyPartitionsDropped(dbName, tblName, Collections.singletonList(partition), deleteData);
+    // Read once for the events and reused below, where the data-deletion check reads the table too.
+    org.apache.hadoop.hive.metastore.api.Table table = null;
+    if (notifyListeners && dropEventNotifier.isEnabled()) {
+      table = readTableForDropEvents(dbName, tblName, 1);
+      if (table != null) {
+        dropEventNotifier.partitionsDropped(table, Collections.singletonList(partition), deleteData);
+      }
     }
 
-    performDropPartitionPostProcessing(dbName, tblName, partition, deleteData, purgeData);
+    performDropPartitionPostProcessing(dbName, tblName, partition, deleteData, purgeData, table);
     return true;
   }
 
+  /** {@code knownTable} is the partition's table if it was already read on this call, otherwise null. */
   private void performDropPartitionPostProcessing(
           String dbName,
           String tblName,
           org.apache.hadoop.hive.metastore.api.Partition partition,
           boolean deleteData,
-          boolean ifPurge
+          boolean ifPurge,
+          org.apache.hadoop.hive.metastore.api.Table knownTable
   ) throws TException {
     if (deleteData && partition.getSd() != null && partition.getSd().getLocation() != null) {
       Path partPath = new Path(partition.getSd().getLocation());
-      org.apache.hadoop.hive.metastore.api.Table table = getTable(dbName, tblName);
+      org.apache.hadoop.hive.metastore.api.Table table = knownTable != null ? knownTable : getTable(dbName, tblName);
       if (isExternalTable(table)) {
         //Don't delete external table data
         return;
