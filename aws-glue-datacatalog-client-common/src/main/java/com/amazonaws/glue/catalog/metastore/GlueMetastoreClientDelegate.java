@@ -1227,11 +1227,11 @@ public class GlueMetastoreClientDelegate {
     try {
       table = getTable(dbName, tblName);
     } catch (Exception e) {
-      dropEventNotifier.recordTableRead(System.nanoTime() - start, false);
+      dropEventNotifier.getStats().tableRead(System.nanoTime() - start, false);
       dropEventNotifier.tableUnavailable(dbName, tblName, partitions.size(), e);
       return;
     }
-    dropEventNotifier.recordTableRead(System.nanoTime() - start, true);
+    dropEventNotifier.getStats().tableRead(System.nanoTime() - start, true);
     dropEventNotifier.partitionsDropped(table, partitions, deleteData);
   }
 

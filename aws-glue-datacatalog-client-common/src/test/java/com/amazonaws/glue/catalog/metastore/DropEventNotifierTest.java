@@ -77,7 +77,7 @@ public class DropEventNotifierTest {
     assertFalse(disabled.isEnabled());
     disabled.tableDropped(table, true);
     disabled.partitionsDropped(table, Collections.singletonList(partition("a")), true);
-    assertEquals(0, disabled.getDeliveredCount());
+    assertEquals(0, disabled.getStats().getDeliveredCount());
   }
 
   @Test
@@ -132,7 +132,7 @@ public class DropEventNotifierTest {
     assertNotNull(event);
     assertSame(table, ((DropTableEvent) event).getTable());
     assertNull(RecordingListener.EVENTS.poll(300, TimeUnit.MILLISECONDS));
-    assertEquals(2, created.getFilteredCount());
+    assertEquals(2, created.getStats().getFilteredCount());
   }
 
   @Test
@@ -145,7 +145,7 @@ public class DropEventNotifierTest {
     assertSame(table, event.getTable());
     assertTrue(event.getStatus());
     assertTrue(event.getDeleteData());
-    assertEquals(1, notifier.getDeliveredCount());
+    assertEquals(1, notifier.getStats().getDeliveredCount());
   }
 
   @Test
@@ -180,7 +180,7 @@ public class DropEventNotifierTest {
     filtering.partitionsDropped(table(ImmutableMap.of(BEEKEEPER_UNREFERENCED, "false")), partitions, false);
     verify(listener, never()).onDropTable(any(DropTableEvent.class));
     verify(listener, never()).onDropPartition(any(DropPartitionEvent.class));
-    assertEquals(4, filtering.getFilteredCount());
+    assertEquals(4, filtering.getStats().getFilteredCount());
 
     filtering.tableDropped(table(ImmutableMap.of(BEEKEEPER_UNREFERENCED, " TRUE ")), false);
     filtering.partitionsDropped(table, partitions, false);
@@ -196,7 +196,7 @@ public class DropEventNotifierTest {
     filtering.tableDropped(table(ImmutableMap.of(BEEKEEPER_UNREFERENCED, "true",
         "metadata_location", "s3://bucket/db/tbl/metadata/00001.metadata.json")), false);
     verify(listener, never()).onDropTable(any(DropTableEvent.class));
-    assertEquals(2, filtering.getFilteredCount());
+    assertEquals(2, filtering.getStats().getFilteredCount());
 
     filtering.tableDropped(table, false);
     verify(listener).onDropTable(any(DropTableEvent.class));
@@ -225,7 +225,7 @@ public class DropEventNotifierTest {
     notifier.tableUnavailable("db", "tbl", 3, new NoSuchObjectException("db.tbl"));
 
     verify(listener, never()).onDropPartition(any(DropPartitionEvent.class));
-    assertEquals(3, notifier.getFailedCount());
+    assertEquals(3, notifier.getStats().getFailedCount());
   }
 
   @Test
@@ -237,8 +237,8 @@ public class DropEventNotifierTest {
     both.tableDropped(table, false);
 
     verify(listener).onDropTable(any(DropTableEvent.class));
-    assertEquals(1, both.getFailedCount());
-    assertEquals(1, both.getDeliveredCount());
+    assertEquals(1, both.getStats().getFailedCount());
+    assertEquals(1, both.getStats().getDeliveredCount());
   }
 
   @Test
@@ -255,7 +255,7 @@ public class DropEventNotifierTest {
     rejecting.partitionsDropped(table, Collections.singletonList(partition("a")), false);
 
     verify(listener, never()).onDropTable(any(DropTableEvent.class));
-    assertEquals(2, rejecting.getRejectedCount());
+    assertEquals(2, rejecting.getStats().getSkippedCount());
   }
 
   @Test
@@ -274,8 +274,8 @@ public class DropEventNotifierTest {
 
     verify(listener, never()).onDropTable(any(DropTableEvent.class));
     verify(listener, never()).onDropPartition(any(DropPartitionEvent.class));
-    assertEquals(2, failing.getFailedCount());
-    assertEquals(2, notifier.getFailedCount());
+    assertEquals(2, failing.getStats().getFailedCount());
+    assertEquals(2, notifier.getStats().getFailedCount());
   }
 
   @Test
@@ -332,7 +332,7 @@ public class DropEventNotifierTest {
     stopping.tableDropped(table, false);
 
     verify(listener, never()).onDropTable(any(DropTableEvent.class));
-    assertEquals(1, stopping.getRejectedCount());
+    assertEquals(1, stopping.getStats().getSkippedCount());
   }
 
   @Test
@@ -347,7 +347,7 @@ public class DropEventNotifierTest {
     measured.tableDropped(table, false);
     measured.tableDropped(table(Collections.<String, String>emptyMap()), false);
     measured.tableUnavailable("db", "tbl", 3, new NoSuchObjectException("db.tbl"));
-    measured.recordTableRead(TimeUnit.MILLISECONDS.toNanos(12), true);
+    measured.getStats().tableRead(TimeUnit.MILLISECONDS.toNanos(12), true);
 
     assertEquals(4.0, events(registry, "partition", "delivered"), 0);
     assertEquals(6.0, events(registry, "partition", "failed"), 0);

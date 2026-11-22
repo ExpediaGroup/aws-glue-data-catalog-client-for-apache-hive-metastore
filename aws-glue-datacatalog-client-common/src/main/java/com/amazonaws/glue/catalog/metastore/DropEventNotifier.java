@@ -24,7 +24,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static com.amazonaws.glue.catalog.metastore.DropEventMetrics.PARTITION;
 import static com.amazonaws.glue.catalog.metastore.DropEventMetrics.TABLE;
@@ -78,12 +77,7 @@ public class DropEventNotifier {
   private final Executor executor;
   private final String requiredTableParameter;
   private final boolean skipIceberg;
-  private final DropEventMetrics metrics;
-
-  private final AtomicLong delivered = new AtomicLong();
-  private final AtomicLong failed = new AtomicLong();
-  private final AtomicLong rejected = new AtomicLong();
-  private final AtomicLong filtered = new AtomicLong();
+  private final DropEventStats stats;
 
   /**
    * Returns a notifier for the listeners named in {@code aws.glue.event.listeners}. Listeners are created once per
@@ -133,7 +127,7 @@ public class DropEventNotifier {
     this.executor = executor;
     this.requiredTableParameter = requiredTableParameter;
     this.skipIceberg = skipIceberg;
-    this.metrics = metrics;
+    this.stats = new DropEventStats(metrics);
   }
 
   public boolean isEnabled() {
@@ -160,7 +154,7 @@ public class DropEventNotifier {
           try {
             event = new DropTableEvent(table, true, deleteData, null);
           } catch (Throwable t) {
-            recordFailed(TABLE, listeners.size());
+            stats.failed(TABLE, listeners.size());
             logger.warn("Unable to build drop table event for " + name, t);
             return;
           }
@@ -168,18 +162,18 @@ public class DropEventNotifier {
             long start = System.nanoTime();
             try {
               listener.onDropTable(event);
-              recordDelivered(TABLE);
+              stats.delivered(TABLE);
             } catch (Throwable t) {
-              recordFailed(TABLE, 1);
+              stats.failed(TABLE, 1);
               logger.warn("Listener " + listener.getClass().getName() + " failed on drop table " + name, t);
             } finally {
-              metrics.listenerCall(TABLE, System.nanoTime() - start);
+              stats.listenerCall(TABLE, System.nanoTime() - start);
             }
           }
         }
       });
     } catch (RuntimeException e) {
-      recordFailed(TABLE, listeners.size());
+      stats.failed(TABLE, listeners.size());
       logger.warn("Unable to queue drop table event for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
@@ -206,7 +200,7 @@ public class DropEventNotifier {
             try {
               event = new DropPartitionEvent(table, partition, true, deleteData, null);
             } catch (Throwable t) {
-              recordFailed(PARTITION, listeners.size());
+              stats.failed(PARTITION, listeners.size());
               logger.warn("Unable to build drop partition event for " + partition.getValues() + " of " + name, t);
               continue;
             }
@@ -214,20 +208,20 @@ public class DropEventNotifier {
               long start = System.nanoTime();
               try {
                 listener.onDropPartition(event);
-                recordDelivered(PARTITION);
+                stats.delivered(PARTITION);
               } catch (Throwable t) {
-                recordFailed(PARTITION, 1);
+                stats.failed(PARTITION, 1);
                 logger.warn("Listener " + listener.getClass().getName() + " failed on drop partition "
                     + partition.getValues() + " of " + name, t);
               } finally {
-                metrics.listenerCall(PARTITION, System.nanoTime() - start);
+                stats.listenerCall(PARTITION, System.nanoTime() - start);
               }
             }
           }
         }
       });
     } catch (RuntimeException e) {
-      recordFailed(PARTITION, (long) partitions.size() * listeners.size());
+      stats.failed(PARTITION, (long) partitions.size() * listeners.size());
       logger.warn("Unable to queue drop partition events for " + table.getDbName() + "." + table.getTableName(), e);
     }
   }
@@ -240,16 +234,9 @@ public class DropEventNotifier {
     if (!isEnabled() || partitionCount <= 0) {
       return;
     }
-    recordFailed(PARTITION, (long) partitionCount * listeners.size());
+    stats.failed(PARTITION, (long) partitionCount * listeners.size());
     logger.warn("Unable to read table " + dbName + "." + tableName + " for " + partitionCount
         + " drop partition event(s); events not sent", cause);
-  }
-
-  /** Records how long reading a dropped partition's table took on the drop call. Never throws. */
-  public void recordTableRead(long nanos, boolean succeeded) {
-    if (isEnabled()) {
-      metrics.tableRead(nanos, succeeded);
-    }
   }
 
   private boolean wanted(Table table, String type, int events) {
@@ -258,8 +245,7 @@ public class DropEventNotifier {
         || (parameters != null && "true".equalsIgnoreCase(trim(parameters.get(requiredTableParameter)))))
         && !(skipIceberg && isIceberg(parameters));
     if (!wanted) {
-      filtered.addAndGet(events);
-      metrics.filtered(type, events);
+      stats.filtered(type, events);
     }
     return wanted;
   }
@@ -279,22 +265,11 @@ public class DropEventNotifier {
     return value == null ? null : value.trim();
   }
 
-  private void recordDelivered(String type) {
-    delivered.incrementAndGet();
-    metrics.delivered(type, 1);
-  }
-
-  private void recordFailed(String type, long count) {
-    failed.addAndGet(count);
-    metrics.failed(type, count);
-  }
-
   private void submit(String type, int events, String description, Runnable task) {
     try {
       executor.execute(task);
     } catch (RejectedExecutionException e) {
-      long count = rejected.incrementAndGet();
-      metrics.skipped(type, events);
+      long count = stats.skipped(type, events);
       logger.warn("Drop event queue is full or shutting down; skipped " + description
           + " (" + count + " skipped so far)");
     }
@@ -320,24 +295,9 @@ public class DropEventNotifier {
     return left;
   }
 
-  /** Listener calls that completed. */
-  public long getDeliveredCount() {
-    return delivered.get();
-  }
-
-  /** Listener calls that threw, or that were not made because the table could not be read. */
-  public long getFailedCount() {
-    return failed.get();
-  }
-
-  /** Drops whose events were skipped because the queue was full or shutting down. */
-  public long getRejectedCount() {
-    return rejected.get();
-  }
-
-  /** Events not sent because of the table filters. */
-  public long getFilteredCount() {
-    return filtered.get();
+  /** Counts and timings of this notifier's events. */
+  public DropEventStats getStats() {
+    return stats;
   }
 
   /**
