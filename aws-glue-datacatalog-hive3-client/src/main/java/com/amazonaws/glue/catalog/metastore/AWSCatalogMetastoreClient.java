@@ -956,6 +956,8 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
         logger.error("Exception thrown by BatchDeletePartitions thread pool. ", e);
       }
     }
+    // Before any rethrow: these partitions are gone from Glue even if another page failed.
+    glueMetastoreClientDelegate.notifyPartitionsDropped(dbName, tableName, deleted, deleteData);
 
     if (tException != null) {
       throw tException;

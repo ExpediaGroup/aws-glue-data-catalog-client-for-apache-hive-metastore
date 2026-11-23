@@ -112,6 +112,79 @@ To enable/tune Database cache:
 
 NOTE: The caching logic is disabled by default.
 
+## Sending drop events to metastore listeners (Expedia fork)
+
+A Hive metastore calls the listeners in `hive.metastore.event.listeners` while it still holds a dropped table, so
+their events carry the table's location and parameters. Glue keeps no copy of a dropped table, and its own events
+carry names only. This client can call Hive `MetaStoreEventListener`s itself after it drops a table or partition,
+using the table and partitions it read before the delete. Tools that clean up dropped data, such as Beekeeper
+through Apiary's `ApiarySnsListener`, then get the same events as from a Hive metastore.
+
+	<property>
+		<name>aws.glue.event.listeners</name>
+		<value>com.expediagroup.apiary.extensions.events.metastore.listener.ApiarySnsListener</value>
+	</property>
+
+- Only `onDropTable` and `onDropPartition` are called, after Glue confirms the delete.
+- Every event carries the table as it is at the time of the drop, as from a Hive metastore. For a partition drop,
+  the table is read on the drop call, right after Glue confirms the delete, only when listeners are configured. A
+  single partition drop with `deleteData` reads the table anyway, to check whether it is external, and reuses that
+  read; otherwise it is one extra Glue read per partition drop call (one per batch for `dropPartitions` by
+  expression). If it can't be read, that drop's events are skipped and logged; the drop itself still succeeds.
+- `DROP DATABASE ... CASCADE` sends no events: Glue deletes the database's tables itself.
+- Listeners run on one background daemon thread with a queue of 10,000 drops, so they never slow down or fail a
+  drop. When the queue is full, the drop's events are skipped and logged. On JVM shutdown, queued events are sent
+  first, waiting up to 10 seconds; any still queued after that are logged.
+- Dropping a table sends one drop table event; its partitions are deleted without events of their own.
+- Each listener needs a public constructor taking a Hadoop `Configuration`, and is loaded through the thread context
+  classloader. If a listener can't be loaded, the error is logged and no events are sent; the client still works.
+- Listeners are created once per JVM for each value of the setting, with the configuration of the first client that
+  names them, and shared by every client after that. Hosts such as Waggle Dance create a client for every metastore
+  status check, and a listener like `ApiarySnsListener` holds an SNS client that is never closed.
+- Hive 3 client only.
+
+The setting is empty by default, which sends no events.
+
+Two optional settings limit which tables send events. Both apply to table and partition drops alike, and both are
+off by default:
+
+	<property>
+		<name>aws.glue.event.listeners.required-table-parameter</name>
+		<value>beekeeper.remove.unreferenced.data</value>
+	</property>
+	<property>
+		<name>aws.glue.event.listeners.skip-iceberg</name>
+		<value>true</value>
+	</property>
+
+- `aws.glue.event.listeners.required-table-parameter`: only tables where this parameter is `true` (case-insensitive)
+  send events. For Beekeeper, `beekeeper.remove.unreferenced.data` is the parameter its drop handling depends on.
+- `aws.glue.event.listeners.skip-iceberg`: no events for Iceberg tables, i.e. tables with a `metadata_location`
+  parameter or a `table_type` containing `iceberg`, the same test Beekeeper uses. This keeps a mistakenly tagged
+  Iceberg table from ever reaching a cleanup tool.
+
+When the host has Micrometer on its classpath, the client reports metrics to Micrometer's global registry; Waggle
+Dance, through Spring Boot, adds its registries (such as Prometheus) to it. Without Micrometer, no metrics are
+recorded and nothing else changes. Micrometer is a `provided` dependency, so it is not shipped with this client.
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `glue.drop.events` | counter | `type` (`table`, `partition`), `result` (`delivered`, `failed`, `skipped`, `filtered`), `reason`, `listener` | `delivered` and `failed` count listener calls; `skipped` and `filtered` count events |
+| `glue.drop.events.listener` | timer | `type`, `listener`, `result` (`success`, `failure`) | Time of one listener call, e.g. one SNS publish for `ApiarySnsListener` |
+| `glue.drop.events.table.read` | timer | `result` (`success`, `failure`), `reason` (`none`, `not_found`, `error`) | Time to read a dropped partition's table on the drop call: what events add to a partition drop |
+| `glue.drop.events.queue.size` | gauge | | Events waiting to be sent |
+
+`reason` values for `glue.drop.events`: `failed`: `listener_error`, `event_error`, `queue_error`, `table_unavailable`;
+`skipped`: `queue_full`, `shutting_down`; `filtered`: `table_parameter_not_true`, `iceberg`. `listener` is the
+listener's class simple name. A tag that doesn't apply is `none`, so every series of a meter has the same tag keys.
+
+`ApiarySnsListener` takes its own settings from environment variables, not from this configuration: `SNS_ARN`
+(the topic to publish to) and `TABLE_PARAM_FILTER` (a regex of the table parameters to include in the message).
+For Beekeeper, set `TABLE_PARAM_FILTER=beekeeper.*|table_type|metadata_location`. The filter must match the whole
+parameter name. Beekeeper needs the `beekeeper.*` parameters to act on an event at all, and `table_type` and
+`metadata_location` to recognise and skip Iceberg tables. Without the filter, the messages carry no table parameters
+and Beekeeper ignores them.
+
 ## License
 
 This library is licensed under the Apache 2.0 License.

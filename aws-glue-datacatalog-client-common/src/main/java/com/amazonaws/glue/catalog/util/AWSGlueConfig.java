@@ -68,6 +68,31 @@ public final class AWSGlueConfig {
     public static final String AWS_GLUE_ICEBERG_HIDE_NON_CURRENT_COLUMNS =
             "aws.glue.iceberg.hide-non-current-columns.enable";
 
+    /**
+     * Comma-separated class names of Hive MetaStoreEventListeners to call after this client drops a table or
+     * partition, as a Hive metastore calls the listeners in hive.metastore.event.listeners. Glue keeps no copy of a
+     * dropped table, so its location and parameters are only known here, from what the client read before the
+     * delete. Only onDropTable and onDropPartition are called, after Glue confirms the delete, on a background
+     * thread: a listener can never slow down or fail a drop. Each class needs a public constructor taking a Hadoop
+     * Configuration, and is loaded through the thread context classloader. Default: empty, no listeners.
+     */
+    public static final String AWS_GLUE_EVENT_LISTENERS = "aws.glue.event.listeners";
+
+    /**
+     * Name of a table parameter that must be "true" (case-insensitive) for the table's drop events to be sent to
+     * aws.glue.event.listeners, e.g. beekeeper.remove.unreferenced.data. Applies to table and partition drops alike.
+     * Default: empty, events for every table.
+     */
+    public static final String AWS_GLUE_EVENT_LISTENERS_REQUIRED_TABLE_PARAMETER =
+            "aws.glue.event.listeners.required-table-parameter";
+
+    /**
+     * When true, no drop events are sent to aws.glue.event.listeners for Iceberg tables: tables whose
+     * metadata_location parameter is set or whose table_type parameter contains "iceberg", the same test Beekeeper
+     * uses. Default: false.
+     */
+    public static final String AWS_GLUE_EVENT_LISTENERS_SKIP_ICEBERG = "aws.glue.event.listeners.skip-iceberg";
+
 
     public static final String AWS_GLUE_DB_CACHE_ENABLE = "aws.glue.cache.db.enable";
     public static final String AWS_GLUE_DB_CACHE_SIZE = "aws.glue.cache.db.size";

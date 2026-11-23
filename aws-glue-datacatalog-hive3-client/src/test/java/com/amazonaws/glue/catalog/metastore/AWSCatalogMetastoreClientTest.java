@@ -56,6 +56,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.StatsSetupConst;
+import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
@@ -69,6 +70,7 @@ import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.Role;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
+import org.apache.hadoop.hive.metastore.events.DropPartitionEvent;
 import org.apache.hadoop.hive.metastore.utils.ObjectPair;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.thrift.TException;
@@ -84,8 +86,12 @@ import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
+import static com.amazonaws.glue.catalog.util.AWSGlueConfig.AWS_GLUE_EVENT_LISTENERS;
 import static com.amazonaws.glue.catalog.util.TestObjects.getCatalogTestFunction;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestDatabase;
 import static com.amazonaws.glue.catalog.util.TestObjects.getTestPartition;
@@ -99,6 +105,7 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.StringContains.containsString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -429,6 +436,54 @@ public class AWSCatalogMetastoreClientTest {
     verify(wh, times(2)).deleteDir(any(Path.class), eq(true), eq(false), eq(true));
     assertEquals(hivePartitions, partitionsDropped);
     assertDaemonThreadPools();
+  }
+
+  @Test
+  public void testDropPartitionsSendsOneDropPartitionEventPerPartition() throws Exception {
+    Table table = HiveToCatalogConverter.convertTable(testTable);
+    String namespaceName = testDB.getName();
+    String tableName = table.getName();
+    Partition partition1 = getTestPartition(namespaceName, tableName, Arrays.asList("foo1", "bar1"));
+    Partition partition2 = getTestPartition(namespaceName, tableName, Arrays.asList("foo2", "bar2"));
+    partition2.getStorageDescriptor().setLocation(partition1.getStorageDescriptor().getLocation() + "-custom");
+    List<Partition> partitions = Lists.newArrayList(partition1, partition2);
+    List<org.apache.hadoop.hive.metastore.api.Partition> hivePartitions =
+        catalogToHiveConverter.convertPartitions(partitions);
+
+    mockGetPartitionsSuccess(partitions);
+    mockBatchDeleteSuccess();
+    when(glueClient.getTable(any(GetTableRequest.class))).thenReturn(new GetTableResult().withTable(table));
+
+    conf.set(AWS_GLUE_EVENT_LISTENERS, RecordingListener.class.getName());
+    RecordingListener.EVENTS.clear();
+    AWSCatalogMetastoreClient client = new AWSCatalogMetastoreClient.Builder().withClientFactory(clientFactory)
+        .withMetastoreFactory(metastoreFactory).withWarehouse(wh).createDefaults(false).withConf(conf).build();
+
+    client.dropPartitions(namespaceName, tableName, Lists.newArrayList(getDumbExpression()), true, false, false);
+
+    List<org.apache.hadoop.hive.metastore.api.Partition> sent = new ArrayList<>();
+    for (int i = 0; i < hivePartitions.size(); i++) {
+      DropPartitionEvent event = RecordingListener.EVENTS.poll(10, TimeUnit.SECONDS);
+      assertThat("missing drop partition event " + i, event, is(instanceOf(DropPartitionEvent.class)));
+      assertEquals(tableName, event.getTable().getTableName());
+      sent.add(event.getPartitionIterator().next());
+    }
+    assertThat(sent, containsInAnyOrder(hivePartitions.toArray()));
+    assertNull(RecordingListener.EVENTS.poll(500, TimeUnit.MILLISECONDS));
+  }
+
+  /** Loaded by class name through aws.glue.event.listeners. */
+  public static class RecordingListener extends MetaStoreEventListener {
+    static final BlockingQueue<DropPartitionEvent> EVENTS = new LinkedBlockingQueue<>();
+
+    public RecordingListener(Configuration config) {
+      super(config);
+    }
+
+    @Override
+    public void onDropPartition(DropPartitionEvent event) {
+      EVENTS.add(event);
+    }
   }
 
   @Test(expected = IllegalArgumentException.class)
