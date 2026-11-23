@@ -123,11 +123,24 @@ public class DropEventNotifier {
   @VisibleForTesting
   DropEventNotifier(List<MetaStoreEventListener> listeners, Executor executor, String requiredTableParameter,
                     boolean skipIceberg, DropEventMetrics metrics) {
-    this.listeners = ImmutableList.copyOf(listeners);
+    this.stats = new DropEventStats(metrics);
+    this.listeners = instrument(listeners, stats);
     this.executor = executor;
     this.requiredTableParameter = requiredTableParameter;
     this.skipIceberg = skipIceberg;
-    this.stats = new DropEventStats(metrics);
+  }
+
+  /**
+   * Wraps each listener so that its calls are counted and timed in {@code stats}. The listeners themselves are
+   * shared by every client in the JVM; only these thin wrappers belong to this notifier.
+   */
+  private static List<MetaStoreEventListener> instrument(List<MetaStoreEventListener> listeners,
+                                                         DropEventStats stats) {
+    ImmutableList.Builder<MetaStoreEventListener> instrumented = ImmutableList.builder();
+    for (MetaStoreEventListener listener : listeners) {
+      instrumented.add(new InstrumentedListener(listener, stats));
+    }
+    return instrumented.build();
   }
 
   public boolean isEnabled() {
@@ -150,7 +163,7 @@ public class DropEventNotifier {
       submit(TABLE, 1, "drop table " + name, new Runnable() {
         @Override
         public void run() {
-          DropTableEvent event;
+          final DropTableEvent event;
           try {
             event = new DropTableEvent(table, true, deleteData, null);
           } catch (Throwable t) {
@@ -158,21 +171,12 @@ public class DropEventNotifier {
             logger.warn("Unable to build drop table event for " + name, t);
             return;
           }
-          for (MetaStoreEventListener listener : listeners) {
-            String listenerName = listenerName(listener);
-            long start = System.nanoTime();
-            boolean succeeded = false;
-            try {
+          callListeners("drop table " + name, new Delivery() {
+            @Override
+            public void deliver(MetaStoreEventListener listener) throws MetaException {
               listener.onDropTable(event);
-              succeeded = true;
-              stats.delivered(TABLE, listenerName);
-            } catch (Throwable t) {
-              stats.failed(TABLE, DropEventMetrics.LISTENER_ERROR, listenerName, 1);
-              logger.warn("Listener " + listener.getClass().getName() + " failed on drop table " + name, t);
-            } finally {
-              stats.listenerCall(TABLE, listenerName, succeeded, System.nanoTime() - start);
             }
-          }
+          });
         }
       });
     } catch (RuntimeException e) {
@@ -199,7 +203,7 @@ public class DropEventNotifier {
         @Override
         public void run() {
           for (Partition partition : dropped) {
-            DropPartitionEvent event;
+            final DropPartitionEvent event;
             try {
               event = new DropPartitionEvent(table, partition, true, deleteData, null);
             } catch (Throwable t) {
@@ -207,22 +211,12 @@ public class DropEventNotifier {
               logger.warn("Unable to build drop partition event for " + partition.getValues() + " of " + name, t);
               continue;
             }
-            for (MetaStoreEventListener listener : listeners) {
-              String listenerName = listenerName(listener);
-              long start = System.nanoTime();
-              boolean succeeded = false;
-              try {
+            callListeners("drop partition " + partition.getValues() + " of " + name, new Delivery() {
+              @Override
+              public void deliver(MetaStoreEventListener listener) throws MetaException {
                 listener.onDropPartition(event);
-                succeeded = true;
-                stats.delivered(PARTITION, listenerName);
-              } catch (Throwable t) {
-                stats.failed(PARTITION, DropEventMetrics.LISTENER_ERROR, listenerName, 1);
-                logger.warn("Listener " + listener.getClass().getName() + " failed on drop partition "
-                    + partition.getValues() + " of " + name, t);
-              } finally {
-                stats.listenerCall(PARTITION, listenerName, succeeded, System.nanoTime() - start);
               }
-            }
+            });
           }
         }
       });
@@ -276,8 +270,29 @@ public class DropEventNotifier {
     return value == null ? null : value.trim();
   }
 
-  private static String listenerName(MetaStoreEventListener listener) {
-    return listener.getClass().getSimpleName();
+  /** One call to a listener for an event. */
+  private interface Delivery {
+    void deliver(MetaStoreEventListener listener) throws MetaException;
+  }
+
+  /**
+   * Calls every listener in turn. A listener that throws is logged and the others are still called; counting and
+   * timing the calls is left to {@link InstrumentedListener}.
+   */
+  private void callListeners(String what, Delivery delivery) {
+    for (MetaStoreEventListener listener : listeners) {
+      try {
+        delivery.deliver(listener);
+      } catch (Throwable t) {
+        logger.warn("Listener " + className(listener) + " failed on " + what, t);
+      }
+    }
+  }
+
+  private static String className(MetaStoreEventListener listener) {
+    return listener instanceof InstrumentedListener
+        ? ((InstrumentedListener) listener).delegateClassName()
+        : listener.getClass().getName();
   }
 
   private void submit(String type, int events, String description, Runnable task) {
